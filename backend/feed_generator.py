@@ -10,10 +10,11 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 
+import json
+
 import feedparser
 import httpx
 import yfinance as yf
-from anthropic import AsyncAnthropic
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,11 +23,15 @@ from models import User, Interest, FeedItem
 log = logging.getLogger("feed_generator")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+# Model to use via OpenRouter (default: Claude Opus via OpenRouter)
+OPENROUTER_MODEL = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-opus-4")
 
 # ---------------------------------------------------------------------------
 # RSS sources (public, no key required)
 # ---------------------------------------------------------------------------
 NEWS_FEEDS = [
+    # International
     ("BBC News", "http://feeds.bbci.co.uk/news/rss.xml"),
     ("Reuters", "https://feeds.reuters.com/reuters/topNews"),
     ("The Guardian", "https://www.theguardian.com/world/rss"),
@@ -36,6 +41,15 @@ NEWS_FEEDS = [
     ("TechCrunch", "https://techcrunch.com/feed/"),
     ("Ars Technica", "http://feeds.arstechnica.com/arstechnica/index"),
     ("NPR News", "https://feeds.npr.org/1001/rss.xml"),
+    # Austria
+    ("ORF News", "https://rss.orf.at/news.xml"),
+    ("ORF Österreich", "https://rss.orf.at/oesterreich.xml"),
+    ("ORF Wissenschaft", "https://rss.orf.at/science.xml"),
+    ("Der Standard", "https://www.derstandard.at/rss"),
+    ("Die Presse", "https://diepresse.com/rss"),
+    ("Kurier", "https://kurier.at/xml/rssfeed"),
+    ("Heute", "https://www.heute.at/feed/"),
+    ("Vienna Online", "https://www.vienna.at/feed"),
 ]
 
 YOUTUBE_FEEDS = [
@@ -134,40 +148,21 @@ def fetch_stock_data(tickers: list[str]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Claude-powered curation
+# AI-powered curation — Anthropic or OpenRouter
 # ---------------------------------------------------------------------------
 
-async def curate_with_claude(
+def _build_curation_prompt(
     interests: list[str],
     news_items: list[tuple[str, dict]],
     video_items: list[tuple[str, dict]],
-    n_news: int = 5,
-    n_videos: int = 2,
-) -> dict:
-    """
-    Use Claude to:
-    1. Select the most relevant news for this user's interests.
-    2. Select the most relevant videos.
-    3. Generate 1-2 interesting facts tailored to the user's interests.
-    """
-    if not ANTHROPIC_API_KEY:
-        log.warning("No ANTHROPIC_API_KEY set, skipping Claude curation")
-        return {"selected_news": list(range(n_news)), "selected_videos": list(range(n_videos)), "facts": []}
-
-    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-
-    # Build compact news list for the prompt
-    news_lines = []
-    for i, (src, e) in enumerate(news_items[:80]):
-        news_lines.append(f"{i}: [{src}] {e['title']}")
-
-    video_lines = []
-    for i, (src, e) in enumerate(video_items[:40]):
-        video_lines.append(f"{i}: [{src}] {e['title']}")
-
+    n_news: int,
+    n_videos: int,
+) -> str:
+    news_lines = [f"{i}: [{src}] {e['title']}" for i, (src, e) in enumerate(news_items[:80])]
+    video_lines = [f"{i}: [{src}] {e['title']}" for i, (src, e) in enumerate(video_items[:40])]
     interests_text = "\n".join(f"- {i}" for i in interests)
-
-    prompt = f"""You are curating a personal news feed. The user has the following interests:
+    n_facts = 1 if n_news <= 4 else 2
+    return f"""You are curating a personal news feed. The user has the following interests:
 {interests_text}
 
 Available news articles (index: title):
@@ -179,7 +174,7 @@ Available videos (index: title):
 Your tasks:
 1. Select the {n_news} most relevant and interesting news article indices for this user. Prefer variety — avoid duplicate topics.
 2. Select the {n_videos} most relevant video indices.
-3. Write {1 if n_news <= 4 else 2} fascinating, brief facts (2-3 sentences each) that this user would find genuinely interesting, based on their interests. Make them surprising and educational — things worth sharing.
+3. Write {n_facts} fascinating, brief facts (2-3 sentences each) that this user would find genuinely interesting, based on their interests. Make them surprising and educational — things worth sharing.
 
 Respond with valid JSON only, in this exact format:
 {{
@@ -190,27 +185,77 @@ Respond with valid JSON only, in this exact format:
   ]
 }}"""
 
+
+def _parse_curation_json(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return json.loads(text.strip())
+
+
+async def _curate_via_anthropic(prompt: str) -> str:
+    from anthropic import AsyncAnthropic
+    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+    response = await client.messages.create(
+        model="claude-opus-4-6",
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.content[0].text
+
+
+async def _curate_via_openrouter(prompt: str) -> str:
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+        default_headers={"HTTP-Referer": "http://localhost:8080", "X-Title": "BoonScroll"},
+    )
+    response = await client.chat.completions.create(
+        model=OPENROUTER_MODEL,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
+
+
+async def curate_with_claude(
+    interests: list[str],
+    news_items: list[tuple[str, dict]],
+    video_items: list[tuple[str, dict]],
+    n_news: int = 5,
+    n_videos: int = 2,
+) -> dict:
+    """
+    Curate feed using an AI model. Prefers OpenRouter if OPENROUTER_API_KEY is
+    set, otherwise falls back to Anthropic. If neither key is present, returns
+    a simple first-N fallback with no facts.
+    """
+    fallback = {
+        "selected_news": list(range(min(n_news, len(news_items)))),
+        "selected_videos": list(range(min(n_videos, len(video_items)))),
+        "facts": [],
+    }
+
+    if not OPENROUTER_API_KEY and not ANTHROPIC_API_KEY:
+        log.warning("No AI API key set (ANTHROPIC_API_KEY or OPENROUTER_API_KEY). Skipping curation.")
+        return fallback
+
+    prompt = _build_curation_prompt(interests, news_items, video_items, n_news, n_videos)
+
     try:
-        response = await client.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        import json
-        text = response.content[0].text.strip()
-        # Strip markdown code blocks if present
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        return json.loads(text.strip())
+        if OPENROUTER_API_KEY:
+            log.info("Curating via OpenRouter (model: %s)", OPENROUTER_MODEL)
+            text = await _curate_via_openrouter(prompt)
+        else:
+            log.info("Curating via Anthropic")
+            text = await _curate_via_anthropic(prompt)
+        return _parse_curation_json(text)
     except Exception as exc:
-        log.error("Claude curation failed: %s", exc)
-        return {
-            "selected_news": list(range(min(n_news, len(news_items)))),
-            "selected_videos": list(range(min(n_videos, len(video_items)))),
-            "facts": [],
-        }
+        log.error("AI curation failed: %s", exc)
+        return fallback
 
 
 # ---------------------------------------------------------------------------
