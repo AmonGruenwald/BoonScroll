@@ -195,30 +195,105 @@ def _parse_curation_json(text: str) -> dict:
     return json.loads(text.strip())
 
 
-async def _curate_via_anthropic(prompt: str) -> str:
-    from anthropic import AsyncAnthropic
-    client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
-    response = await client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+async def call_ai(prompt: str, max_tokens: int = 1024) -> str:
+    """Call the configured AI and return the text response. Raises if no key set."""
+    if OPENROUTER_API_KEY:
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=OPENROUTER_API_KEY,
+            base_url="https://openrouter.ai/api/v1",
+            default_headers={"HTTP-Referer": "http://localhost:8080", "X-Title": "BoonScroll"},
+        )
+        resp = await client.chat.completions.create(
+            model=OPENROUTER_MODEL, max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content
+    elif ANTHROPIC_API_KEY:
+        from anthropic import AsyncAnthropic
+        client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
+        resp = await client.messages.create(
+            model="claude-opus-4-6", max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.content[0].text
+    else:
+        raise ValueError("No AI API key configured")
 
 
-async def _curate_via_openrouter(prompt: str) -> str:
-    from openai import AsyncOpenAI
-    client = AsyncOpenAI(
-        api_key=OPENROUTER_API_KEY,
-        base_url="https://openrouter.ai/api/v1",
-        default_headers={"HTTP-Referer": "http://localhost:8080", "X-Title": "BoonScroll"},
-    )
-    response = await client.chat.completions.create(
-        model=OPENROUTER_MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.choices[0].message.content
+# ---------------------------------------------------------------------------
+# Article fetching & summarisation
+# ---------------------------------------------------------------------------
+
+async def fetch_article_text(url: str, max_chars: int = 4000) -> str:
+    """Download a news article and extract its plain text."""
+    if not url:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
+            headers = {"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0; +http://localhost)"}
+            resp = await client.get(url, headers=headers)
+            if resp.status_code != 200:
+                return ""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(resp.text, "lxml")
+        for tag in soup(["script", "style", "nav", "header", "footer", "aside",
+                          "form", "figure", "figcaption", "iframe", "noscript"]):
+            tag.decompose()
+        # Prefer <article> or <main>, fall back to <body>
+        body = soup.find("article") or soup.find("main") or soup.body
+        if not body:
+            return ""
+        text = " ".join(body.get_text(separator=" ").split())
+        return text[:max_chars]
+    except Exception as exc:
+        log.debug("Article fetch failed for %s: %s", url, exc)
+        return ""
+
+
+async def summarize_article(title: str, source: str, article_text: str, rss_summary: str) -> str:
+    """
+    Use AI to write a 3–4 sentence digest of the article.
+    Falls back to the RSS summary if AI is unavailable or article text is empty.
+    """
+    text = article_text or rss_summary or ""
+    if not text or (not OPENROUTER_API_KEY and not ANTHROPIC_API_KEY):
+        return ""
+
+    prompt = f"""Write a clear, engaging 3–4 sentence summary of this news article for a personal news digest.
+Be factual and informative. Write in plain prose — no bullet points, no "The article says".
+Keep it under 80 words.
+
+Source: {source}
+Title: {title}
+Article text: {text[:3000]}
+
+Summary:"""
+
+    try:
+        return (await call_ai(prompt, max_tokens=200)).strip()
+    except Exception as exc:
+        log.warning("Summarisation failed for '%s': %s", title, exc)
+        return ""
+
+
+async def fetch_and_summarize_news(
+    selected: list[tuple[str, dict]],
+) -> list[str]:
+    """
+    Concurrently fetch article text and summarise each selected news item.
+    Returns a list of summary strings (empty string if failed).
+    """
+    async def _one(src_name: str, entry: dict) -> str:
+        article_text = await fetch_article_text(entry.get("link", ""))
+        return await summarize_article(
+            title=entry.get("title", ""),
+            source=src_name,
+            article_text=article_text,
+            rss_summary=entry.get("summary", ""),
+        )
+
+    return list(await asyncio.gather(*[_one(s, e) for s, e in selected]))
 
 
 async def curate_with_claude(
@@ -246,12 +321,8 @@ async def curate_with_claude(
     prompt = _build_curation_prompt(interests, news_items, video_items, n_news, n_videos)
 
     try:
-        if OPENROUTER_API_KEY:
-            log.info("Curating via OpenRouter (model: %s)", OPENROUTER_MODEL)
-            text = await _curate_via_openrouter(prompt)
-        else:
-            log.info("Curating via Anthropic")
-            text = await _curate_via_anthropic(prompt)
+        log.info("Curating via %s", "OpenRouter" if OPENROUTER_API_KEY else "Anthropic")
+        text = await call_ai(prompt)
         return _parse_curation_json(text)
     except Exception as exc:
         log.error("AI curation failed: %s", exc)
@@ -314,17 +385,24 @@ async def generate_feed_for_user(
     items_to_save: list[FeedItem] = []
     pos = 0
 
-    # --- NEWS ---
-    for idx in curation.get("selected_news", [])[:n_news]:
-        if idx >= len(all_news):
-            continue
-        src_name, entry = all_news[idx]
+    # --- NEWS — fetch full articles and summarise concurrently ---
+    selected_news = [
+        all_news[idx]
+        for idx in curation.get("selected_news", [])[:n_news]
+        if idx < len(all_news)
+    ]
+    log.info("Fetching and summarising %d articles for user %s", len(selected_news), user.name)
+    summaries = await fetch_and_summarize_news(selected_news)
+
+    for (src_name, entry), ai_summary in zip(selected_news, summaries):
         item = FeedItem(
             user_id=user.id,
             feed_date=feed_date,
             item_type="news",
             title=entry["title"][:499],
-            summary=entry["summary"][:2000] if entry.get("summary") else None,
+            # AI digest goes in content; raw RSS excerpt kept in summary as fallback
+            content=ai_summary or None,
+            summary=entry.get("summary", "")[:2000] or None,
             source_url=entry.get("link"),
             thumbnail_url=entry.get("media_thumbnail"),
             source_name=src_name,

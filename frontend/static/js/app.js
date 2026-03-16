@@ -208,10 +208,12 @@ function postActions(item, showShare) {
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
       Share
     </button>` : '';
+  // "Read original" is the primary CTA when there's a digest, otherwise "Open"
+  const label = item.content ? 'Read original' : 'Open';
   const extLink = item.source_url ? `
     <a class="action-btn" href="${item.source_url}" target="_blank" rel="noopener">
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-      Open
+      ${label}
     </a>` : '';
   return `<div class="post-actions">${shareBtn}${extLink}</div>`;
 }
@@ -267,10 +269,31 @@ function buildCard(item, showShare = true) {
     </div>`;
   }
 
-  // news / image / default — thumbnail on right
+  // news / image / default
+  // If we have an AI digest (content), show it as the main body (self-post style).
+  // Otherwise fall back to the RSS summary snippet.
+  const digest = item.content || '';
+  const fallbackSummary = !digest && item.summary ? stripHtml(item.summary) : '';
+
   const thumb = item.thumbnail_url
     ? `<img class="post-thumb" src="${item.thumbnail_url}" alt="" loading="lazy" onerror="this.style.display='none'">`
-    : `<div class="post-thumb-placeholder">📰</div>`;
+    : '';
+
+  if (digest) {
+    // Self-post style: full-width, no thumbnail on right
+    return `
+    <div class="post-card" data-id="${item.id}">
+      ${postMeta(item)}
+      <div class="post-body">
+        <div class="post-text">
+          <div class="post-title">${item.title}</div>
+        </div>
+        ${thumb ? `<img class="post-thumb" src="${item.thumbnail_url}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
+      </div>
+      <div class="post-digest">${digest}</div>
+      ${postActions(item, showShare)}
+    </div>`;
+  }
 
   return `
     <div class="post-card" data-id="${item.id}">
@@ -278,7 +301,7 @@ function buildCard(item, showShare = true) {
       <div class="post-body">
         <div class="post-text">
           <div class="post-title">${item.source_url ? `<a href="${item.source_url}" target="_blank" rel="noopener">${item.title}</a>` : item.title}</div>
-          ${item.summary ? `<div class="post-summary">${stripHtml(item.summary)}</div>` : ''}
+          ${fallbackSummary ? `<div class="post-summary">${fallbackSummary}</div>` : ''}
         </div>
         ${thumb}
       </div>
