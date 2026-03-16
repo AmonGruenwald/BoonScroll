@@ -334,6 +334,51 @@ button { font-family: var(--font); }
 #shared-card-wrap { width: 100%; max-width: 560px; }
 #shared-card-wrap .post-card { border-radius: var(--radius-lg); }
 
+/* ===== Tag pills ===== */
+.post-tags {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  padding: 0 12px 8px;
+}
+.tag-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 100px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px; font-weight: 700;
+  letter-spacing: .2px;
+  border: 1px solid rgba(31,107,71,.18);
+}
+
+/* ===== Collapsible post cards ===== */
+.collapsible-trigger {
+  cursor: pointer; user-select: none;
+}
+.collapsible-trigger:hover .post-title { color: var(--accent); }
+
+.expand-chevron {
+  display: inline-block; margin-left: 6px; vertical-align: middle;
+  color: var(--text-muted); transition: transform .2s;
+  font-size: 11px; line-height: 1;
+}
+[data-expanded="true"] .expand-chevron { transform: rotate(180deg); }
+
+.post-body-collapsed { display: none; }
+[data-expanded="true"] .post-body-collapsed { display: block; }
+
+/* ===== User delete button ===== */
+.user-card { position: relative; }
+.user-delete-btn {
+  position: absolute; top: 6px; right: 6px;
+  background: none; border: none; cursor: pointer;
+  width: 22px; height: 22px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; color: var(--text-muted);
+  opacity: 0; transition: opacity .15s, background .15s, color .15s;
+}
+.user-card:hover .user-delete-btn { opacity: 1; }
+.user-delete-btn:hover { background: #FDECEA; color: var(--red); }
+
 /* ===== Toast ===== */
 .toast {
   position: fixed; bottom: calc(var(--bottom-nav-h) + 12px); left: 50%;

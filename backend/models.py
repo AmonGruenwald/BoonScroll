@@ -51,6 +51,8 @@ class FeedItem(Base):
     stock_price = Column(Float)
     stock_change = Column(Float)
     stock_change_pct = Column(Float)
+    # Tags — comma-separated interest labels this post covers
+    tags = Column(Text)
     # Order in the feed
     position = Column(Integer, default=0)
     share_token = Column(String(64), unique=True)

@@ -105,6 +105,7 @@ def item_to_dict(item: FeedItem) -> dict:
         "stock_price": item.stock_price,
         "stock_change": item.stock_change,
         "stock_change_pct": item.stock_change_pct,
+        "tags": [t.strip() for t in item.tags.split(",")] if item.tags else [],
         "position": item.position,
         "share_token": item.share_token,
         "share_url": f"/shared/{item.share_token}",

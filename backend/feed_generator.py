@@ -307,27 +307,39 @@ async def filter_by_interests(
     interests: list[str],
     max_relevant: int = 35,
 ) -> list[tuple[str, dict]]:
-    """Use a cheap model to score articles and keep only relevant ones."""
+    """Use a cheap model to strictly filter articles to only those matching user interests."""
     if not news_items or not (OPENROUTER_API_KEY or ANTHROPIC_API_KEY):
         return news_items[:max_relevant]
 
-    interests_text = "; ".join(interests)
-    lines = [f"{i}: {e['title']}" for i, (_, e) in enumerate(news_items[:150])]
+    interests_text = "\n".join(f"- {i}" for i in interests)
+    lines = [f"{i}: {e['title']}" for i, (_, e) in enumerate(news_items[:120])]
 
-    prompt = f"""User interests: {interests_text}
+    prompt = f"""You are a STRICT relevance filter for a personal news feed.
 
-Score each article headline 0–10 for relevance to the user's interests.
-Only include articles scoring 6 or above.
-Be strict — only include genuinely relevant articles.
+The user ONLY wants news about their specific interests — nothing else.
 
-Articles:
+USER'S INTERESTS:
+{interests_text}
+
+Score each headline 0–10:
+- 8–10: Directly and clearly about one of the user's interests
+- 6–7: Has a meaningful, specific connection to an interest
+- 0–5: Off-topic, generic, or only tangentially related → EXCLUDE
+
+STRICT RULES:
+- A user interested in "cooking" gets 0 for politics, sports, business, science (unless food science), crime, war, celebrity gossip.
+- A user interested in "cooking" gets 8+ for: recipes, restaurants, food trends, ingredients, chefs, kitchen tools, cuisine.
+- When in doubt, score 0. Missing a relevant article is better than including an irrelevant one.
+- Only return indices that score 6 or higher, ordered best-first.
+
+HEADLINES:
 {chr(10).join(lines)}
 
-Return JSON only: {{"relevant": [list of integer indices ordered by relevance score, highest first]}}"""
+Return JSON only: {{"relevant": [list of integer indices, best-first]}}"""
 
     try:
-        text = await call_ai_fast(prompt, max_tokens=400)
-        data = parse_json_safely(text)
+        raw = await call_ai_fast(prompt, max_tokens=400)
+        data = parse_json_safely(raw)
         if isinstance(data, dict) and "relevant" in data:
             indices = [i for i in data["relevant"] if isinstance(i, int) and i < len(news_items)]
             result = [news_items[i] for i in indices[:max_relevant]]
@@ -358,20 +370,22 @@ async def group_by_topic(
 
     prompt = f"""User interests: {interests_text}
 
-Group these news articles into exactly {n_groups} topic clusters for a personal news digest.
-Each cluster represents one cohesive news story or theme.
-Prefer clusters that combine 2–4 articles covering the same story from different angles.
-Single-article clusters are fine if the story is important and standalone.
+Group these news articles into up to {n_groups} topic clusters.
+Each cluster = one cohesive news story or theme that relates to the user's interests.
+Combine 2–4 articles covering the same story. Single-article clusters are fine for standalone stories.
+ONLY create clusters that genuinely relate to the user's interests above.
+
+For each group also list which of the user's interests it covers (use the exact wording from the interest list).
 
 Articles:
 {chr(10).join(lines)}
 
 Return JSON only:
-{{"groups": [{{"topic": "brief descriptive title", "angle": "what makes this interesting for the user", "indices": [0, 3, 7]}}]}}"""
+{{"groups": [{{"topic": "brief title", "angle": "why interesting for this user", "tags": ["exact interest label"], "indices": [0, 3, 7]}}]}}"""
 
     try:
-        text = await call_ai_fast(prompt, max_tokens=800)
-        data = parse_json_safely(text)
+        raw = await call_ai_fast(prompt, max_tokens=900)
+        data = parse_json_safely(raw)
         if isinstance(data, dict) and "groups" in data:
             groups = []
             for g in data["groups"]:
@@ -380,14 +394,14 @@ Return JSON only:
                     groups.append({
                         "topic": g.get("topic", articles[0][1]["title"]),
                         "angle": g.get("angle", ""),
+                        "tags": g.get("tags", []),
                         "articles": articles,
                     })
             log.info("Phase 2: grouped into %d topics", len(groups))
             return groups[:n_groups]
     except Exception as exc:
         log.warning("Topic grouping failed: %s", exc)
-    # Fallback: one article per group
-    return [{"topic": e["title"], "angle": "", "articles": [(s, e)]} for s, e in relevant[:n_groups]]
+    return [{"topic": e["title"], "angle": "", "tags": [], "articles": [(s, e)]} for s, e in relevant[:n_groups]]
 
 
 # ---------------------------------------------------------------------------
@@ -396,8 +410,9 @@ Return JSON only:
 
 async def synthesize_topic_group(group: dict) -> dict:
     """Fetch article texts and write a comprehensive digest for one topic group."""
-    topic   = group["topic"]
-    angle   = group["angle"]
+    topic    = group["topic"]
+    angle    = group["angle"]
+    tags     = group.get("tags", [])
     articles = group["articles"]
 
     # Fetch article texts concurrently
@@ -417,7 +432,6 @@ async def synthesize_topic_group(group: dict) -> dict:
             source_blocks.append(f"Source: {src}\nTitle: {e['title']}\n{body[:2000]}")
 
     if not source_blocks:
-        # Nothing to synthesise, return a minimal item
         src_name, entry = articles[0]
         return {
             "title": topic,
@@ -425,6 +439,7 @@ async def synthesize_topic_group(group: dict) -> dict:
             "thumbnail_url": thumbnail,
             "source_url": entry.get("link"),
             "source_name": src_name,
+            "tags": tags,
         }
 
     sources_text = "\n\n---\n\n".join(source_blocks)
@@ -454,6 +469,7 @@ Do not use bullet points. Write in flowing prose."""
         "thumbnail_url": thumbnail,
         "source_url": source_url,
         "source_name": " · ".join(source_names[:3]),
+        "tags": tags,
     }
 
 
@@ -568,6 +584,7 @@ async def generate_feed_for_user(
 
     # --- NEWS ---
     for synth in synthesized_news:
+        raw_tags = synth.get("tags") or []
         items_to_save.append(FeedItem(
             user_id=user.id, feed_date=feed_date, item_type="news",
             title=synth["title"][:499],
@@ -575,6 +592,7 @@ async def generate_feed_for_user(
             source_url=synth.get("source_url"),
             thumbnail_url=synth.get("thumbnail_url"),
             source_name=synth.get("source_name"),
+            tags=", ".join(raw_tags) if raw_tags else None,
             position=pos,
             share_token=make_share_token(user.id, feed_date, pos),
         ))
@@ -586,6 +604,7 @@ async def generate_feed_for_user(
             user_id=user.id, feed_date=feed_date, item_type="fact",
             title=fact.get("title", "Did you know?")[:499],
             content=fact.get("content", ""),
+            tags=fact.get("tag") or None,
             source_name="BoonScroll",
             position=pos,
             share_token=make_share_token(user.id, feed_date, pos),

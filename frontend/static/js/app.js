@@ -63,11 +63,11 @@ function formatDate(isoDate) {
   return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 }
 
-function showToast(msg) {
+function showToast(msg, duration = 2500) {
   const t = $('share-toast');
   t.textContent = msg;
   t.classList.remove('hidden');
-  setTimeout(() => t.classList.add('hidden'), 2500);
+  setTimeout(() => t.classList.add('hidden'), duration);
 }
 
 function stripHtml(html) {
@@ -92,7 +92,7 @@ async function renderSharedItem(token) {
       <p style="font-size:12px;color:var(--text-meta);margin-bottom:10px;padding:0 4px;">
         Shared by <strong>${item.shared_by}</strong> · ${formatDate(item.feed_date)}
       </p>
-      ${buildCard(item, false)}`;
+      ${buildCard(item, false, true)}`;
   } catch {
     wrap.innerHTML = `<p style="text-align:center;color:var(--text-meta);padding:40px 0">Item not found.</p>`;
   }
@@ -112,12 +112,33 @@ function renderUserList() {
   }
   list.innerHTML = state.users.map(u => `
     <div class="user-card" data-id="${u.id}">
+      <button class="user-delete-btn" data-id="${u.id}" title="Delete ${u.display_name}">✕</button>
       <div class="avatar lg" style="background:${u.avatar_color}">${avatarInitials(u.display_name)}</div>
       <span class="name">${u.display_name}</span>
     </div>`).join('');
-  list.querySelectorAll('.user-card').forEach(card =>
-    card.addEventListener('click', () => selectUser(Number(card.dataset.id)))
-  );
+
+  list.querySelectorAll('.user-card').forEach(card => {
+    card.addEventListener('click', e => {
+      if (e.target.closest('.user-delete-btn')) return; // let delete button handle it
+      selectUser(Number(card.dataset.id));
+    });
+  });
+
+  list.querySelectorAll('.user-delete-btn').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const user = state.users.find(u => u.id === id);
+      if (!confirm(`Delete ${user?.display_name ?? 'this user'}? This also deletes all their feed data.`)) return;
+      try {
+        await api(`/api/users/${id}`, { method: 'DELETE' });
+        state.users = state.users.filter(u => u.id !== id);
+        renderUserList();
+      } catch (err) {
+        showToast('Error deleting user: ' + err.message);
+      }
+    });
+  });
 }
 
 async function selectUser(userId) {
@@ -190,7 +211,7 @@ async function loadFeed() {
     state.feed = data.items;
     loading.classList.add('hidden');
     if (!state.feed.length) { empty.classList.remove('hidden'); return; }
-    list.innerHTML = state.feed.map(item => buildCard(item, true)).join('');
+    list.innerHTML = state.feed.map(item => buildCard(item, true, false)).join('');
     attachCardListeners();
   } catch (e) {
     loading.classList.add('hidden');
@@ -200,7 +221,14 @@ async function loadFeed() {
 }
 
 // ---- Card builder ----
-const TYPE_LABELS = { news: 'News', fact: 'Fun Fact', video: 'Video', stock: 'Stock', image: 'Image' };
+const TYPE_LABELS = { news: 'News', fact: 'Fact', video: 'Video', stock: 'Stock', image: 'Image' };
+
+function tagPills(tags) {
+  if (!tags || !tags.length) return '';
+  return tags.map(t =>
+    `<span class="tag-pill">${t}</span>`
+  ).join('');
+}
 
 function postMeta(item) {
   return `
@@ -208,6 +236,8 @@ function postMeta(item) {
       <span class="post-type-dot dot-${item.item_type}"></span>
       <span class="post-source">${TYPE_LABELS[item.item_type] || item.item_type}</span>
       ${item.source_name ? `<span class="post-source-sep">·</span><span>${item.source_name}</span>` : ''}
+      <span class="meta-spacer"></span>
+      ${tagPills(item.tags)}
     </div>`;
 }
 
@@ -217,7 +247,6 @@ function postActions(item, showShare) {
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
       Share
     </button>` : '';
-  // "Read original" is the primary CTA when there's a digest, otherwise "Open"
   const label = item.content ? 'Read original' : 'Open';
   const extLink = item.source_url ? `
     <a class="action-btn" href="${item.source_url}" target="_blank" rel="noopener">
@@ -227,18 +256,23 @@ function postActions(item, showShare) {
   return `<div class="post-actions">${shareBtn}${extLink}</div>`;
 }
 
-function buildCard(item, showShare = true) {
+// expanded = whether to force-open (used on shared page)
+function buildCard(item, showShare = true, expanded = false) {
+  const expandedAttr = expanded ? 'data-expanded="true"' : 'data-expanded="false"';
+
   if (item.item_type === 'stock') {
     const dir = (item.stock_change ?? 0) >= 0 ? 'up' : 'down';
     const arrow = dir === 'up' ? '▲' : '▼';
     return `
-    <div class="post-card" data-id="${item.id}">
+    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
       ${postMeta(item)}
-      <div class="post-stock-body">
-        <div class="stock-row">
-          <span class="stock-ticker">${item.ticker}</span>
-          <span class="stock-price">$${item.stock_price?.toFixed(2)}</span>
-          <span class="stock-change ${dir}">${arrow} ${Math.abs(item.stock_change ?? 0).toFixed(2)} (${Math.abs(item.stock_change_pct ?? 0).toFixed(2)}%)</span>
+      <div class="post-header collapsible-trigger">
+        <div class="post-stock-body">
+          <div class="stock-row">
+            <span class="stock-ticker">${item.ticker}</span>
+            <span class="stock-price">$${item.stock_price?.toFixed(2)}</span>
+            <span class="stock-change ${dir}">${arrow} ${Math.abs(item.stock_change ?? 0).toFixed(2)} (${Math.abs(item.stock_change_pct ?? 0).toFixed(2)}%)</span>
+          </div>
         </div>
       </div>
       ${postActions(item, showShare)}
@@ -247,82 +281,70 @@ function buildCard(item, showShare = true) {
 
   if (item.item_type === 'video') {
     const embed = item.media_url
-      ? `<div class="post-video-wrap"><iframe src="${item.media_url}" allowfullscreen loading="lazy"></iframe></div>`
+      ? `<div class="post-video-wrap post-body-collapsed"><iframe src="${item.media_url}" allowfullscreen loading="lazy"></iframe></div>`
       : '';
     return `
-    <div class="post-card" data-id="${item.id}">
+    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
       ${postMeta(item)}
+      <div class="post-header collapsible-trigger">
+        <div class="post-body">
+          <div class="post-text">
+            <div class="post-title">${item.title}</div>
+            ${item.summary ? `<div class="post-summary post-body-collapsed">${stripHtml(item.summary)}</div>` : ''}
+          </div>
+          <span class="expand-chevron">›</span>
+        </div>
+      </div>
       ${embed}
-      <div class="post-body">
-        <div class="post-text">
-          <div class="post-title">${item.source_url ? `<a href="${item.source_url}" target="_blank" rel="noopener">${item.title}</a>` : item.title}</div>
-          ${item.summary ? `<div class="post-summary">${stripHtml(item.summary)}</div>` : ''}
-        </div>
-      </div>
       ${postActions(item, showShare)}
     </div>`;
   }
 
-  if (item.item_type === 'fact') {
-    return `
-    <div class="post-card" data-id="${item.id}">
-      ${postMeta(item)}
-      <div class="post-body">
-        <div class="post-text">
-          <div class="post-title">${item.title}</div>
-        </div>
-        <div class="post-thumb-placeholder">💡</div>
-      </div>
-      <div class="post-fact-content">${item.content || ''}</div>
-      ${postActions(item, showShare)}
-    </div>`;
-  }
-
-  // news / image / default
-  // If we have an AI digest (content), show it as the main body (self-post style).
-  // Otherwise fall back to the RSS summary snippet.
-  const digest = item.content || '';
-  const fallbackSummary = !digest && item.summary ? stripHtml(item.summary) : '';
-
+  // news / fact / default — collapsible body
   const thumb = item.thumbnail_url
     ? `<img class="post-thumb" src="${item.thumbnail_url}" alt="" loading="lazy" onerror="this.style.display='none'">`
     : '';
 
-  if (digest) {
-    // Self-post style: full-width, no thumbnail on right
-    return `
-    <div class="post-card" data-id="${item.id}">
-      ${postMeta(item)}
-      <div class="post-body">
-        <div class="post-text">
-          <div class="post-title">${item.title}</div>
-        </div>
-        ${thumb ? `<img class="post-thumb" src="${item.thumbnail_url}" alt="" loading="lazy" onerror="this.style.display='none'">` : ''}
-      </div>
-      <div class="post-digest">${digest}</div>
-      ${postActions(item, showShare)}
-    </div>`;
-  }
+  const bodyContent = item.item_type === 'fact'
+    ? `<div class="post-digest post-body-collapsed">${item.content || ''}</div>`
+    : item.content
+      ? `<div class="post-digest post-body-collapsed">${item.content}</div>`
+      : item.summary
+        ? `<div class="post-digest post-body-collapsed">${stripHtml(item.summary)}</div>`
+        : '';
 
   return `
-    <div class="post-card" data-id="${item.id}">
+    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
       ${postMeta(item)}
-      <div class="post-body">
-        <div class="post-text">
-          <div class="post-title">${item.source_url ? `<a href="${item.source_url}" target="_blank" rel="noopener">${item.title}</a>` : item.title}</div>
-          ${fallbackSummary ? `<div class="post-summary">${fallbackSummary}</div>` : ''}
+      <div class="post-header collapsible-trigger">
+        <div class="post-body">
+          <div class="post-text">
+            <div class="post-title">${item.title}</div>
+          </div>
+          ${thumb}
+          <span class="expand-chevron">›</span>
         </div>
-        ${thumb}
       </div>
+      ${bodyContent}
       ${postActions(item, showShare)}
     </div>`;
 }
 
 function attachCardListeners() {
-  document.querySelectorAll('.share-btn, .action-btn.share').forEach(btn => {
-    btn.addEventListener('click', async () => {
-      const token = btn.dataset.token;
-      const url = `${window.location.origin}/shared/${token}`;
+  // Expand/collapse on header click
+  document.querySelectorAll('.collapsible-trigger').forEach(header => {
+    header.addEventListener('click', () => {
+      const card = header.closest('.post-card');
+      const expanded = card.dataset.expanded === 'true';
+      card.dataset.expanded = expanded ? 'false' : 'true';
+    });
+  });
+
+  // Share buttons
+  document.querySelectorAll('.action-btn.share').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation();
+      const url = `${window.location.origin}/shared/${btn.dataset.token}`;
       try { await navigator.clipboard.writeText(url); } catch { prompt('Copy link:', url); }
       showToast('Link copied!');
     });
@@ -331,40 +353,34 @@ function attachCardListeners() {
 
 // ---- Refresh ----
 async function triggerGenerate() {
-  const btns = ['trigger-generate', 'bnav-refresh'];
-  btns.forEach(id => { const el = $(id); if (el) { el.disabled = true; } });
+  ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = true; });
   try {
     const d = state.feedDates[state.currentDateIdx];
     await api('/api/feed/generate', { method: 'POST', body: { feed_date: d } });
-    showToast('Generating… check back in a moment');
+    showToast('Generating… refresh in about 30 seconds', 4000);
     setTimeout(async () => {
       await loadFeedDates();
-      btns.forEach(id => { const el = $(id); if (el) el.disabled = false; });
-    }, 6000);
+      ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = false; });
+    }, 30000);
   } catch (e) {
     showToast('Error: ' + e.message);
-    btns.forEach(id => { const el = $(id); if (el) el.disabled = false; });
+    ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = false; });
   }
 }
 
 $('trigger-generate').addEventListener('click', triggerGenerate);
-
-// ---- Logout / switch user ----
 $('logout-btn').addEventListener('click', logout);
 
-// ---- Bottom nav wiring ----
+// ---- Bottom nav ----
 $('bnav-prev').addEventListener('click', goToPrevDate);
 $('bnav-next').addEventListener('click', goToNextDate);
 $('bnav-refresh').addEventListener('click', triggerGenerate);
-$('bnav-interests').addEventListener('click', openInterests);
+$('bnav-interests').addEventListener('click', () => $('panel-interests').classList.remove('hidden'));
 $('bnav-logout').addEventListener('click', logout);
 
 // ---- Interests panel ----
-$('open-interests').addEventListener('click', openInterests);
-$('close-interests').addEventListener('click', closeInterests);
-
-function openInterests() { $('panel-interests').classList.remove('hidden'); }
-function closeInterests() { $('panel-interests').classList.add('hidden'); }
+$('open-interests').addEventListener('click', () => $('panel-interests').classList.remove('hidden'));
+$('close-interests').addEventListener('click', () => $('panel-interests').classList.add('hidden'));
 
 function renderInterests() {
   const list = $('interests-list');
@@ -374,28 +390,41 @@ function renderInterests() {
     return;
   }
   list.innerHTML = interests.map(i => `
-    <div class="interest-chip">
+    <div class="interest-chip" data-id="${i.id}">
       <span style="flex:1">${i.description}</span>
-      <button class="interest-del" data-id="${i.id}">✕</button>
+      <button class="interest-del" data-id="${i.id}" title="Remove">✕</button>
     </div>`).join('');
-  list.querySelectorAll('.interest-del').forEach(btn =>
+
+  list.querySelectorAll('.interest-del').forEach(btn => {
     btn.addEventListener('click', async () => {
-      await api(`/api/users/${state.currentUser.id}/interests/${btn.dataset.id}`, { method: 'DELETE' });
-      state.currentUser.interests = state.currentUser.interests.filter(i => i.id !== Number(btn.dataset.id));
-      renderInterests();
-    })
-  );
+      const id = Number(btn.dataset.id);
+      const chip = list.querySelector(`.interest-chip[data-id="${id}"]`);
+      if (chip) chip.style.opacity = '0.4';
+      try {
+        await api(`/api/users/${state.currentUser.id}/interests/${id}`, { method: 'DELETE' });
+        state.currentUser.interests = state.currentUser.interests.filter(i => i.id !== id);
+        renderInterests();
+      } catch (err) {
+        if (chip) chip.style.opacity = '1';
+        showToast('Could not delete: ' + err.message);
+      }
+    });
+  });
 }
 
 $('save-interest').addEventListener('click', async () => {
   const text = $('new-interest-text').value.trim();
   if (!text) return;
-  const interest = await api(`/api/users/${state.currentUser.id}/interests`, {
-    method: 'POST', body: { description: text },
-  });
-  state.currentUser.interests.push(interest);
-  $('new-interest-text').value = '';
-  renderInterests();
+  try {
+    const interest = await api(`/api/users/${state.currentUser.id}/interests`, {
+      method: 'POST', body: { description: text },
+    });
+    state.currentUser.interests.push(interest);
+    $('new-interest-text').value = '';
+    renderInterests();
+  } catch (err) {
+    showToast('Could not save: ' + err.message);
+  }
 });
 
 // ---- Add user modal ----
@@ -437,15 +466,9 @@ $('save-add-user').addEventListener('click', async () => {
 
   const storedId = localStorage.getItem(USER_STORAGE_KEY);
   if (storedId) {
-    try {
-      await selectUser(Number(storedId));
-      return;
-    } catch {
-      // User may have been deleted — fall through to user select
-      localStorage.removeItem(USER_STORAGE_KEY);
-    }
+    try { await selectUser(Number(storedId)); return; }
+    catch { localStorage.removeItem(USER_STORAGE_KEY); }
   }
-
   showScreen('users');
   await loadUsers();
 })();
