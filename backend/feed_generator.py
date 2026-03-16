@@ -48,24 +48,72 @@ NEWS_RECENCY_HOURS = int(os.environ.get("NEWS_RECENCY_HOURS", "36"))
 # RSS sources
 # ---------------------------------------------------------------------------
 NEWS_FEEDS = [
-    # International
-    ("BBC News",       "http://feeds.bbci.co.uk/news/rss.xml"),
-    ("Reuters",        "https://feeds.reuters.com/reuters/topNews"),
-    ("The Guardian",   "https://www.theguardian.com/world/rss"),
-    ("Hacker News",    "https://news.ycombinator.com/rss"),
-    ("NASA",           "https://www.nasa.gov/rss/dyn/breaking_news.rss"),
-    ("Science Daily",  "https://www.sciencedaily.com/rss/all.xml"),
-    ("TechCrunch",     "https://techcrunch.com/feed/"),
-    ("Ars Technica",   "http://feeds.arstechnica.com/arstechnica/index"),
-    ("NPR News",       "https://feeds.npr.org/1001/rss.xml"),
-    # Austria
-    ("ORF News",        "https://rss.orf.at/news.xml"),
-    ("ORF Österreich",  "https://rss.orf.at/oesterreich.xml"),
-    ("ORF Wissenschaft","https://rss.orf.at/science.xml"),
-    ("Der Standard",    "https://www.derstandard.at/rss"),
-    ("Die Presse",      "https://diepresse.com/rss"),
-    ("Heute",           "https://www.heute.at/feed/"),
-    ("Vienna Online",   "https://www.vienna.at/feed"),
+    # --- General / International (kept lean) ---
+    ("BBC News",          "http://feeds.bbci.co.uk/news/rss.xml"),
+    ("Reuters",           "https://feeds.reuters.com/reuters/topNews"),
+    ("NPR News",          "https://feeds.npr.org/1001/rss.xml"),
+    ("AP News",           "https://feeds.apnews.com/rss/topnews"),
+
+    # --- Technology & Science ---
+    ("Ars Technica",      "http://feeds.arstechnica.com/arstechnica/index"),
+    ("Hacker News",       "https://news.ycombinator.com/rss"),
+    ("Wired",             "https://www.wired.com/feed/rss"),
+    ("MIT Tech Review",   "https://www.technologyreview.com/feed/"),
+    ("The Verge",         "https://www.theverge.com/rss/index.xml"),
+    ("Science Daily",     "https://www.sciencedaily.com/rss/all.xml"),
+    ("New Scientist",     "https://www.newscientist.com/feed/home/"),
+    ("NASA",              "https://www.nasa.gov/rss/dyn/breaking_news.rss"),
+    ("TechCrunch",        "https://techcrunch.com/feed/"),
+
+    # --- Finance & Economics ---
+    ("MarketWatch",       "https://feeds.marketwatch.com/marketwatch/topstories/"),
+    ("Reuters Business",  "https://feeds.reuters.com/reuters/businessNews"),
+    ("Investopedia",      "https://www.investopedia.com/feedbuilder/feed/getfeed/?feedName=rss_headline"),
+    ("Seeking Alpha",     "https://seekingalpha.com/market_currents.xml"),
+
+    # --- Food & Cooking ---
+    ("Serious Eats",      "https://www.seriouseats.com/feeds/all"),
+    ("Bon Appétit",       "https://www.bonappetit.com/feed/rss"),
+    ("The Kitchn",        "https://www.thekitchn.com/main.rss"),
+    ("Food52",            "https://food52.com/blog/feed"),
+    ("BBC Good Food",     "https://www.bbcgoodfood.com/api/json/rss/homepage-feed.rss"),
+
+    # --- Sports ---
+    ("BBC Sport",         "http://feeds.bbci.co.uk/sport/rss.xml"),
+    ("ESPN",              "https://www.espn.com/espn/rss/news"),
+    ("Sky Sports",        "https://www.skysports.com/rss/12040"),
+
+    # --- Gaming ---
+    ("Eurogamer",         "https://www.eurogamer.net/?format=rss"),
+    ("Rock Paper Shotgun","https://www.rockpapershotgun.com/feed"),
+    ("IGN",               "https://feeds.ign.com/ign/games-articles"),
+
+    # --- Health & Wellbeing ---
+    ("Harvard Health",    "https://www.health.harvard.edu/blog/feed"),
+    ("WebMD",             "https://rssfeeds.webmd.com/rss/rss.aspx?RSSSource=RSS_PUBLIC"),
+
+    # --- Environment & Sustainability ---
+    ("Yale E360",         "https://e360.yale.edu/feed"),
+    ("Carbon Brief",      "https://www.carbonbrief.org/feed"),
+    ("Guardian Environment", "https://www.theguardian.com/environment/rss"),
+
+    # --- Arts, Culture & Books ---
+    ("The Guardian Culture", "https://www.theguardian.com/culture/rss"),
+    ("Pitchfork",         "https://pitchfork.com/rss/news/"),
+    ("Literary Hub",      "https://lithub.com/feed/"),
+
+    # --- Travel ---
+    ("Lonely Planet",     "https://www.lonelyplanet.com/news/feed"),
+    ("Atlas Obscura",     "https://www.atlasobscura.com/feeds/latest"),
+
+    # --- Austria ---
+    ("ORF News",          "https://rss.orf.at/news.xml"),
+    ("ORF Österreich",    "https://rss.orf.at/oesterreich.xml"),
+    ("ORF Wissenschaft",  "https://rss.orf.at/science.xml"),
+    ("Der Standard",      "https://www.derstandard.at/rss"),
+    ("Die Presse",        "https://diepresse.com/rss"),
+    ("Heute",             "https://www.heute.at/feed/"),
+    ("Vienna Online",     "https://www.vienna.at/feed"),
 ]
 
 YOUTUBE_FEEDS = [
@@ -220,13 +268,39 @@ def fetch_stock_data(tickers: list[str]) -> list[dict]:
 
 
 async def extract_tickers_from_interests(interests: list[str]) -> list[str]:
-    mentioned = []
-    interest_text = " ".join(interests).upper()
-    for ticker in ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "NFLX", "AMD", "INTC"]:
-        if ticker in interest_text:
-            mentioned.append(ticker)
-    combined = list(dict.fromkeys(mentioned + ["SPY", "AAPL", "MSFT"]))
-    return combined[:5]
+    """Use the fast model to find US stock tickers relevant to the user's interests.
+    Returns an empty list if no clear match exists — we skip stocks rather than show irrelevant ones."""
+    if not (OPENROUTER_API_KEY or ANTHROPIC_API_KEY):
+        return []
+
+    interests_text = "\n".join(f"- {i}" for i in interests)
+    prompt = f"""Given these personal interests, list up to 5 relevant US stock tickers to display in a news feed.
+Only include tickers with a clear, direct connection to an interest.
+If there is no natural connection (e.g. interests are cooking, history, or sport with no financial angle), return an empty list — do NOT force generic picks like SPY or AAPL.
+
+Interests:
+{interests_text}
+
+Examples:
+- "electric vehicles, Tesla" → ["TSLA"]
+- "gaming, video games" → ["ATVI", "MSFT", "NTDOY"]
+- "cooking, food" → []
+- "AI, machine learning" → ["NVDA", "MSFT", "GOOGL"]
+- "cycling, running" → []
+- "investing, stock market" → ["SPY", "QQQ", "BRK-B"]
+
+Return JSON only: {{"tickers": ["TICK1", "TICK2"]}}"""
+
+    try:
+        raw = await call_ai_fast(prompt, max_tokens=80)
+        data = parse_json_safely(raw)
+        if isinstance(data, dict) and "tickers" in data:
+            tickers = [t.upper().strip() for t in data["tickers"] if isinstance(t, str)]
+            log.info("AI extracted tickers: %s", tickers)
+            return tickers[:5]
+    except Exception as exc:
+        log.warning("Ticker extraction failed: %s", exc)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -459,18 +533,31 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
         # Try og:image from the first article
         thumbnail = await fetch_og_image(articles[0][1].get("link", ""))
 
-    # Build source context
+    # Build source context — prefer scraped article text, fall back to RSS summary
     source_blocks = []
+    scrape_successes = 0
     for (src, e), text in zip(articles, texts):
-        body = text or e.get("summary", "")
+        if text:
+            body = text[:2000]
+            scrape_successes += 1
+        else:
+            # Strip HTML from RSS summary and use it as fallback
+            raw_summary = e.get("summary", "")
+            body = BeautifulSoup(raw_summary, "lxml").get_text(separator=" ")
+            body = " ".join(body.split())[:600]
         if body:
-            source_blocks.append(f"Source: {src}\nTitle: {e['title']}\n{body[:2000]}")
+            source_blocks.append(f"Source: {src}\nTitle: {e['title']}\n{body}")
+
+    if scrape_successes == 0 and source_blocks:
+        log.debug("Topic '%s': all %d sources used RSS summaries (scraping blocked)", topic, len(articles))
+    elif scrape_successes < len(articles):
+        log.debug("Topic '%s': %d/%d sources scraped, rest used RSS summaries", topic, scrape_successes, len(articles))
 
     if not source_blocks:
         src_name, entry = articles[0]
         return {
             "title": topic,
-            "content": entry.get("summary", ""),
+            "content": BeautifulSoup(entry.get("summary", ""), "lxml").get_text(separator=" ")[:500],
             "thumbnail_url": thumbnail,
             "source_url": entry.get("link"),
             "source_name": src_name,
@@ -485,17 +572,25 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
     if interests:
         reader_context = f"\nThe reader's interests: {'; '.join(interests)}\nFrame and emphasise the parts of this story most relevant to those interests.\n"
 
+    depth_note = (
+        "Note: source material is from article excerpts — use all details available."
+        if scrape_successes > 0 else
+        "Note: source material is from brief RSS summaries — write what you can confidently say; do not invent specifics not present in the text."
+    )
+
     prompt = f"""You are writing a digest post for a personal news app.
 
 Topic: {topic}
 Why it matters to this reader: {angle}{reader_context}
+{depth_note}
+
 Source material:
 {sources_text}
 
 Write a digest of 150–220 words (6–9 sentences) that:
 - Opens with the most important or surprising fact — not "According to" or "This article"
 - Synthesises details from ALL provided sources, not just one
-- Uses specific numbers, names, and details (avoid vague generalities)
+- Uses specific numbers, names, and details where available (avoid vague generalities)
 - Frames the story from the angle most relevant to the reader's interests
 - Ends with one sentence of forward-looking context (what happens next, why it matters long-term)
 - Reads like a well-informed friend explaining the story, not a press release
@@ -604,10 +699,10 @@ async def generate_feed_for_user(
     if not interests:
         interests = ["general news", "science", "technology"]
 
-    n_news   = max(3, ITEMS_PER_USER - 4)
     n_videos = 2
     n_stocks = 2
-    n_facts  = max(1, ITEMS_PER_USER - n_news - n_videos - n_stocks)
+    n_facts  = 1
+    n_news   = max(3, ITEMS_PER_USER - n_videos - n_stocks - n_facts)
 
     # --- Phase 0: filter to recent news only ---
     recent_news = [(s, e) for s, e in all_news if is_recent(e)]
@@ -680,7 +775,9 @@ async def generate_feed_for_user(
 
     # --- STOCKS ---
     tickers = await extract_tickers_from_interests(interests)
-    stock_data = await asyncio.get_event_loop().run_in_executor(None, fetch_stock_data, tickers[:n_stocks])
+    if not tickers:
+        log.info("No relevant tickers for user %s — skipping stocks", user.name)
+    stock_data = await asyncio.get_event_loop().run_in_executor(None, fetch_stock_data, tickers[:n_stocks]) if tickers else []
     for stock in stock_data:
         direction = "up" if stock["change"] >= 0 else "down"
         items_to_save.append(FeedItem(
