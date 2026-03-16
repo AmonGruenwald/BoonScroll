@@ -286,6 +286,7 @@ async def generate_feed_for_user(
     feed_date: date,
     all_news: list[tuple[str, dict]],
     all_videos: list[tuple[str, dict]],
+    interests: list[str],
 ):
     """Generate and store a full feed for one user for a given date."""
     # Delete any existing feed for this user+date
@@ -296,7 +297,6 @@ async def generate_feed_for_user(
         )
     )
 
-    interests = [i.description for i in user.interests]
     if not interests:
         interests = ["general news", "science", "technology"]
 
@@ -434,11 +434,10 @@ async def generate_all_feeds(session: AsyncSession, feed_date: Optional[date] = 
     users = result.scalars().all()
 
     for user in users:
-        # Reload interests for each user
         result2 = await session.execute(select(Interest).where(Interest.user_id == user.id))
-        user.interests = result2.scalars().all()
+        interests = [i.description for i in result2.scalars().all()]
         try:
-            await generate_feed_for_user(session, user, feed_date, all_news, all_videos)
+            await generate_feed_for_user(session, user, feed_date, all_news, all_videos, interests)
         except Exception as exc:
             log.error("Failed to generate feed for %s: %s", user.name, exc)
 
