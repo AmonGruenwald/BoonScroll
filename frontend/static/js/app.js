@@ -345,8 +345,19 @@ function attachCardListeners() {
     btn.addEventListener('click', async e => {
       e.stopPropagation();
       const url = `${window.location.origin}/shared/${btn.dataset.token}`;
-      try { await navigator.clipboard.writeText(url); } catch { prompt('Copy link:', url); }
-      showToast('Link copied!');
+      let copied = false;
+      if (navigator.clipboard) {
+        try { await navigator.clipboard.writeText(url); copied = true; } catch {}
+      }
+      if (!copied) {
+        // Fallback for HTTP (clipboard API requires HTTPS)
+        const ta = document.createElement('textarea');
+        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.focus(); ta.select();
+        try { copied = document.execCommand('copy'); } catch {}
+        document.body.removeChild(ta);
+      }
+      showToast(copied ? 'Link copied!' : 'Copy failed — open share link manually');
     });
   });
 }
