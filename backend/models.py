@@ -53,6 +53,8 @@ class FeedItem(Base):
     stock_change_pct = Column(Float)
     # Tags — comma-separated interest labels this post covers
     tags = Column(Text)
+    # All source URLs (JSON array) for posts synthesised from multiple articles
+    source_urls = Column(Text)
     # Order in the feed
     position = Column(Integer, default=0)
     share_token = Column(String(64), unique=True)

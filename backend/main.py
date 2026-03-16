@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -106,6 +107,7 @@ def item_to_dict(item: FeedItem) -> dict:
         "stock_change": item.stock_change,
         "stock_change_pct": item.stock_change_pct,
         "tags": [t.strip() for t in item.tags.split(",")] if item.tags else [],
+        "source_urls": json.loads(item.source_urls) if item.source_urls else [],
         "position": item.position,
         "share_token": item.share_token,
         "share_url": f"/shared/{item.share_token}",

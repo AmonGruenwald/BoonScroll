@@ -18,6 +18,7 @@ async def init_db():
         # Additive migrations — safe to run on existing DBs
         for stmt in [
             "ALTER TABLE feed_items ADD COLUMN tags TEXT",
+            "ALTER TABLE feed_items ADD COLUMN source_urls TEXT",
         ]:
             try:
                 await conn.execute(text(stmt))

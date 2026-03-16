@@ -133,6 +133,30 @@ NEWS_FEEDS = [
     ("Die Presse",        "https://diepresse.com/rss"),
     ("Heute",             "https://www.heute.at/feed/"),
     ("Vienna Online",     "https://www.vienna.at/feed"),
+
+    # --- Reddit ---
+    ("Reddit r/worldnews",      "https://www.reddit.com/r/worldnews/hot.rss?limit=25"),
+    ("Reddit r/technology",     "https://www.reddit.com/r/technology/hot.rss?limit=25"),
+    ("Reddit r/science",        "https://www.reddit.com/r/science/hot.rss?limit=25"),
+    ("Reddit r/programming",    "https://www.reddit.com/r/programming/hot.rss?limit=25"),
+    ("Reddit r/cooking",        "https://www.reddit.com/r/cooking/hot.rss?limit=25"),
+    ("Reddit r/investing",      "https://www.reddit.com/r/investing/hot.rss?limit=25"),
+    ("Reddit r/personalfinance","https://www.reddit.com/r/personalfinance/hot.rss?limit=25"),
+    ("Reddit r/sports",         "https://www.reddit.com/r/sports/hot.rss?limit=25"),
+    ("Reddit r/gaming",         "https://www.reddit.com/r/gaming/hot.rss?limit=25"),
+    ("Reddit r/environment",    "https://www.reddit.com/r/environment/hot.rss?limit=25"),
+    ("Reddit r/books",          "https://www.reddit.com/r/books/hot.rss?limit=25"),
+    ("Reddit r/travel",         "https://www.reddit.com/r/travel/hot.rss?limit=25"),
+    ("Reddit r/Austria",        "https://www.reddit.com/r/Austria/hot.rss?limit=25"),
+    ("Reddit r/todayilearned",  "https://www.reddit.com/r/todayilearned/hot.rss?limit=25"),
+    ("Reddit r/health",         "https://www.reddit.com/r/health/hot.rss?limit=25"),
+    ("Reddit r/space",          "https://www.reddit.com/r/space/hot.rss?limit=25"),
+    ("Reddit r/food",           "https://www.reddit.com/r/food/hot.rss?limit=25"),
+    ("Reddit r/MachineLearning","https://www.reddit.com/r/MachineLearning/hot.rss?limit=25"),
+    ("Reddit r/ArtificialIntelligence","https://www.reddit.com/r/ArtificialIntelligence/hot.rss?limit=25"),
+    ("Reddit r/soccer",         "https://www.reddit.com/r/soccer/hot.rss?limit=25"),
+    ("Reddit r/formula1",       "https://www.reddit.com/r/formula1/hot.rss?limit=25"),
+    ("Reddit r/cycling",        "https://www.reddit.com/r/cycling/hot.rss?limit=25"),
 ]
 
 YOUTUBE_FEEDS = [
@@ -242,7 +266,7 @@ def _parse_feed(text: str) -> list[dict]:
 async def fetch_feed(url: str) -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "BoonScroll/1.0"})
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0; +https://boonscroll.app)"})
         # feedparser is CPU-bound — run off the event loop
         return await _in_thread(_parse_feed, resp.text)
     except Exception as exc:
@@ -501,11 +525,17 @@ async def group_by_topic(
     interests: list[str],
     n_groups: int = 6,
 ) -> list[dict]:
-    """Cluster relevant articles into topic groups."""
+    """Cluster relevant articles into topic groups, each with at least 2 articles."""
     if not relevant:
         return []
     if not (OPENROUTER_API_KEY or ANTHROPIC_API_KEY):
-        return [{"topic": e["title"], "angle": "", "articles": [(s, e)]} for s, e in relevant[:n_groups]]
+        # Fallback: pair up articles without AI
+        groups = []
+        for i in range(0, min(len(relevant), n_groups * 2), 2):
+            pair = relevant[i:i+2]
+            if len(pair) >= 2:
+                groups.append({"topic": pair[0][1]["title"], "angle": "", "tags": interests[:1], "articles": pair})
+        return groups[:n_groups]
 
     interests_text = "; ".join(interests)
     lines = [f"{i}: [{src}] {e['title']}" for i, (src, e) in enumerate(relevant)]
@@ -513,11 +543,13 @@ async def group_by_topic(
     prompt = f"""User interests: {interests_text}
 
 Group these news articles into up to {n_groups} topic clusters.
-Each cluster = one cohesive news story or theme that relates to the user's interests.
-Combine 2–4 articles covering the same story. Single-article clusters are fine for standalone stories.
-ONLY create clusters that genuinely relate to the user's interests above.
+STRICT RULES:
+- Each cluster MUST contain AT LEAST 2 articles. Never create a single-article cluster.
+- Combine 2-5 articles covering the same story or closely related theme.
+- ONLY create clusters that genuinely relate to the user's interests above.
+- Every cluster MUST have at least one tag matching the user's interest list (use exact wording).
 
-For each group also list which of the user's interests it covers (use the exact wording from the interest list).
+For each group list which of the user's interests it covers.
 
 Articles:
 {chr(10).join(lines)}
@@ -526,32 +558,77 @@ Return JSON only:
 {{"groups": [{{"topic": "brief title", "angle": "why interesting for this user", "tags": ["exact interest label"], "indices": [0, 3, 7]}}]}}"""
 
     try:
-        raw = await call_ai_fast(prompt, max_tokens=900)
+        raw = await call_ai_fast(prompt, max_tokens=1200)
         data = parse_json_safely(raw)
         if isinstance(data, dict) and "groups" in data:
             groups = []
             for g in data["groups"]:
                 articles = [relevant[i] for i in g.get("indices", []) if i < len(relevant)]
-                if articles:
+                if len(articles) >= 2:
+                    tags = g.get("tags") or []
+                    # Fallback: assign tags by matching interests against topic title
+                    if not tags:
+                        topic_lower = g.get("topic", "").lower()
+                        tags = [i for i in interests if any(w in topic_lower for w in i.lower().split())]
+                    if not tags:
+                        tags = interests[:1]
                     groups.append({
                         "topic": g.get("topic", articles[0][1]["title"]),
                         "angle": g.get("angle", ""),
-                        "tags": g.get("tags", []),
+                        "tags": tags,
                         "articles": articles,
                     })
-            log.info("Phase 2: grouped into %d topics", len(groups))
+            log.info("Phase 2: grouped into %d topics (>=2 sources each)", len(groups))
             return groups[:n_groups]
     except Exception as exc:
         log.warning("Topic grouping failed: %s", exc)
-    return [{"topic": e["title"], "angle": "", "tags": [], "articles": [(s, e)]} for s, e in relevant[:n_groups]]
+    # Fallback: pair up articles
+    groups = []
+    for i in range(0, min(len(relevant), n_groups * 2), 2):
+        pair = relevant[i:i+2]
+        if len(pair) >= 2:
+            groups.append({"topic": pair[0][1]["title"], "angle": "", "tags": interests[:1], "articles": pair})
+    return groups[:n_groups]
+
+
+def _apply_interest_cap(groups: list[dict], interests: list[str], max_per_interest: int = 2) -> list[dict]:
+    """Limit to max_per_interest groups per interest. Merge overflow into the last kept group."""
+    from collections import defaultdict
+
+    kept: list[dict] = []
+    interest_count: dict[str, int] = defaultdict(int)
+    overflow_by_interest: dict[str, list[dict]] = defaultdict(list)
+
+    for group in groups:
+        primary = (group.get("tags") or [""])[0]
+        if not primary or interest_count[primary] < max_per_interest:
+            kept.append(group)
+            if primary:
+                interest_count[primary] += 1
+        else:
+            overflow_by_interest[primary].append(group)
+
+    # Merge overflow articles into the last kept group for that interest
+    for interest, overflow_groups in overflow_by_interest.items():
+        for g in reversed(kept):
+            if (g.get("tags") or [""])[0] == interest:
+                for og in overflow_groups:
+                    g["articles"].extend(og["articles"])
+                g["topic"] = f"{interest.title()} — daily digest"
+                g["angle"] = (g.get("angle") or "") + " Covers multiple stories from today."
+                break
+
+    log.info("Interest cap: %d groups -> %d (max %d per interest)", len(groups), len(kept), max_per_interest)
+    return kept
 
 
 # ---------------------------------------------------------------------------
 # Phase 3 — Synthesise topic group into one post (main model)
 # ---------------------------------------------------------------------------
 
-async def synthesize_topic_group(group: dict, interests: list[str] | None = None) -> dict:
-    """Fetch article texts and write a comprehensive digest for one topic group."""
+async def synthesize_topic_group(group: dict, interests: list[str] | None = None) -> dict | None:
+    """Fetch article texts and write a comprehensive digest for one topic group.
+    Returns None if no source content is available (post is skipped entirely)."""
     topic    = group["topic"]
     angle    = group["angle"]
     tags     = group.get("tags", [])
@@ -563,8 +640,9 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
     # Find best thumbnail
     thumbnail = next((e.get("media_thumbnail") for _, e in articles if e.get("media_thumbnail")), None)
     if not thumbnail:
-        # Try og:image from the first article
-        thumbnail = await fetch_og_image(articles[0][1].get("link", ""))
+        # Try og:image from the first article that has a link
+        first_link = next((e.get("link", "") for _, e in articles if e.get("link")), "")
+        thumbnail = await fetch_og_image(first_link)
 
     # Build source context — prefer scraped article text, fall back to RSS summary
     source_blocks = []
@@ -585,20 +663,16 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
     elif scrape_successes < len(articles):
         log.debug("Topic '%s': %d/%d sources scraped, rest used RSS summaries", topic, scrape_successes, len(articles))
 
+    # Skip post entirely if we have no content from any source
     if not source_blocks:
-        src_name, entry = articles[0]
-        return {
-            "title": topic,
-            "content": strip_html(entry.get("summary", ""))[:500],
-            "thumbnail_url": thumbnail,
-            "source_url": entry.get("link"),
-            "source_name": src_name,
-            "tags": tags,
-        }
+        log.info("Skipping topic '%s' — no source content available", topic)
+        return None
 
     sources_text = "\n\n---\n\n".join(source_blocks)
     source_names = list(dict.fromkeys(src for src, _ in articles))
-    source_url   = articles[0][1].get("link")
+    # Collect all valid source URLs for the post
+    all_source_urls = [e.get("link") for _, e in articles if e.get("link")]
+    source_url = all_source_urls[0] if all_source_urls else None
 
     reader_context = ""
     if interests:
@@ -630,16 +704,22 @@ Write a digest of 150–220 words (6–9 sentences) that:
 Write in flowing prose. No bullet points. No subheadings."""
 
     try:
-        content = (await call_ai(prompt, max_tokens=600)).strip()
+        synth_content = (await call_ai(prompt, max_tokens=600)).strip()
     except Exception as exc:
         log.warning("Synthesis failed for '%s': %s", topic, exc)
-        content = articles[0][1].get("summary", "")
+        # Fall back to RSS summaries joined together (keep the summaries)
+        synth_content = " ".join(
+            strip_html(e.get("summary", ""))[:300] for _, e in articles if e.get("summary")
+        ).strip()
+        if not synth_content:
+            return None
 
     return {
         "title": topic,
-        "content": content,
+        "content": synth_content,
         "thumbnail_url": thumbnail,
         "source_url": source_url,
+        "source_urls": all_source_urls,
         "source_name": " · ".join(source_names[:3]),
         "tags": tags,
     }
@@ -743,11 +823,19 @@ async def generate_feed_for_user(
         recent_news = all_news
     log.info("User %s: %d recent news items (from %d total)", user.name, len(recent_news), len(all_news))
 
-    # --- Phases 1–3 and video selection run concurrently ---
+    # --- Phases 1-3 and video selection run concurrently ---
     async def _build_news_items():
-        relevant     = await filter_by_interests(recent_news, interests, max_relevant=35)
-        topic_groups = await group_by_topic(relevant, interests, n_groups=n_news)
-        return await asyncio.gather(*[synthesize_topic_group(g, interests) for g in topic_groups])
+        # Fetch more candidates since we need 2+ articles per group
+        relevant     = await filter_by_interests(recent_news, interests, max_relevant=60)
+        # Request more groups since interest cap may reduce them
+        topic_groups = await group_by_topic(relevant, interests, n_groups=n_news * 3)
+        # Enforce max 2 posts per interest (merge overflow into 2nd group)
+        topic_groups = _apply_interest_cap(topic_groups, interests, max_per_interest=2)
+        # Limit to n_news after cap
+        topic_groups = topic_groups[:n_news]
+        results = await asyncio.gather(*[synthesize_topic_group(g, interests) for g in topic_groups])
+        # Filter out None (groups with no source content)
+        return [r for r in results if r is not None]
 
     synthesized_news, selected_vids, facts = await asyncio.gather(
         _build_news_items(),
@@ -761,11 +849,13 @@ async def generate_feed_for_user(
     # --- NEWS ---
     for synth in synthesized_news:
         raw_tags = synth.get("tags") or []
+        src_urls = synth.get("source_urls") or []
         items_to_save.append(FeedItem(
             user_id=user.id, feed_date=feed_date, item_type="news",
             title=synth["title"][:499],
             content=synth.get("content") or None,
             source_url=synth.get("source_url"),
+            source_urls=json.dumps(src_urls) if src_urls else None,
             thumbnail_url=synth.get("thumbnail_url"),
             source_name=synth.get("source_name"),
             tags=", ".join(raw_tags) if raw_tags else None,

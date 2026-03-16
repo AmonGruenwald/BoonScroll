@@ -330,13 +330,17 @@ function buildDetailView(item) {
       <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
       Share
     </button>` : '';
-  const extLink = item.source_url ? `
-    <a class="btn btn-primary btn-sm" href="${item.source_url}" target="_blank" rel="noopener">
+  // Build source links — use source_urls array if available, fall back to source_url
+  const sourceLinks = (item.source_urls && item.source_urls.length)
+    ? item.source_urls
+    : (item.source_url ? [item.source_url] : []);
+  const extLinks = sourceLinks.map((url, i) => `
+    <a class="btn btn-primary btn-sm" href="${url}" target="_blank" rel="noopener">
       <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-      ${item.content ? 'Read original' : 'Open source'}
-    </a>` : '';
-  if (shareBtn || extLink) {
-    html += `<div class="detail-actions">${shareBtn}${extLink}</div>`;
+      ${sourceLinks.length > 1 ? `Source ${i + 1}` : (item.content ? 'Read original' : 'Open source')}
+    </a>`).join('');
+  if (shareBtn || extLinks) {
+    html += `<div class="detail-actions">${shareBtn}${extLinks}</div>`;
   }
 
   $('detail-content').innerHTML = html;
