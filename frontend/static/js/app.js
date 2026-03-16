@@ -25,6 +25,7 @@ const $ = id => document.getElementById(id);
 const screens = {
   users: $('screen-users'),
   feed: $('screen-feed'),
+  detail: $('screen-detail'),
   shared: $('screen-shared'),
 };
 
@@ -92,7 +93,7 @@ async function renderSharedItem(token) {
       <p style="font-size:12px;color:var(--text-meta);margin-bottom:10px;padding:0 4px;">
         Shared by <strong>${item.shared_by}</strong> · ${formatDate(item.feed_date)}
       </p>
-      ${buildCard(item, false, true)}`;
+      ${buildSharedCard(item)}`;
   } catch {
     wrap.innerHTML = `<p style="text-align:center;color:var(--text-meta);padding:40px 0">Item not found.</p>`;
   }
@@ -211,7 +212,7 @@ async function loadFeed() {
     state.feed = data.items;
     loading.classList.add('hidden');
     if (!state.feed.length) { empty.classList.remove('hidden'); return; }
-    list.innerHTML = state.feed.map(item => buildCard(item, true, false)).join('');
+    list.innerHTML = state.feed.map(item => buildFeedCard(item)).join('');
     attachCardListeners();
   } catch (e) {
     loading.classList.add('hidden');
@@ -223,143 +224,186 @@ async function loadFeed() {
 // ---- Card builder ----
 const TYPE_LABELS = { news: 'News', fact: 'Fact', video: 'Video', stock: 'Stock', image: 'Image' };
 
-function tagPills(tags) {
+function tagPillsHtml(tags) {
   if (!tags || !tags.length) return '';
-  return tags.map(t =>
-    `<span class="tag-pill">${t}</span>`
-  ).join('');
+  return tags.map(t => `<span class="tag-pill">${t}</span>`).join('');
 }
 
-function postMeta(item) {
-  return `
-    <div class="post-meta">
-      <span class="post-type-dot dot-${item.item_type}"></span>
-      <span class="post-source">${TYPE_LABELS[item.item_type] || item.item_type}</span>
-      ${item.source_name ? `<span class="post-source-sep">·</span><span>${item.source_name}</span>` : ''}
-      <span class="meta-spacer"></span>
-      ${tagPills(item.tags)}
-    </div>`;
-}
-
-function postActions(item, showShare) {
-  const shareBtn = showShare ? `
-    <button class="action-btn share" data-token="${item.share_token}">
-      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
-      Share
-    </button>` : '';
-  const label = item.content ? 'Read original' : 'Open';
-  const extLink = item.source_url ? `
-    <a class="action-btn" href="${item.source_url}" target="_blank" rel="noopener">
-      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
-      ${label}
-    </a>` : '';
-  return `<div class="post-actions">${shareBtn}${extLink}</div>`;
-}
-
-// expanded = whether to force-open (used on shared page)
-function buildCard(item, showShare = true, expanded = false) {
-  const expandedAttr = expanded ? 'data-expanded="true"' : 'data-expanded="false"';
-
+// Feed list card — title + meta only, tap to open detail
+function buildFeedCard(item) {
   if (item.item_type === 'stock') {
     const dir = (item.stock_change ?? 0) >= 0 ? 'up' : 'down';
     const arrow = dir === 'up' ? '▲' : '▼';
     return `
-    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
-      ${postMeta(item)}
-      <div class="post-header collapsible-trigger">
-        <div class="post-stock-body">
-          <div class="stock-row">
-            <span class="stock-ticker">${item.ticker}</span>
-            <span class="stock-price">$${item.stock_price?.toFixed(2)}</span>
-            <span class="stock-change ${dir}">${arrow} ${Math.abs(item.stock_change ?? 0).toFixed(2)} (${Math.abs(item.stock_change_pct ?? 0).toFixed(2)}%)</span>
-          </div>
+    <div class="post-card" data-id="${item.id}">
+      <div class="post-meta">
+        <span class="post-type-dot dot-stock"></span>
+        <span class="post-source">Stock</span>
+        <span class="meta-spacer"></span>
+        ${tagPillsHtml(item.tags)}
+      </div>
+      <div class="post-stock-body">
+        <div class="stock-row">
+          <span class="stock-ticker">${item.ticker}</span>
+          <span class="stock-price">$${item.stock_price?.toFixed(2)}</span>
+          <span class="stock-change ${dir}">${arrow} ${Math.abs(item.stock_change ?? 0).toFixed(2)} (${Math.abs(item.stock_change_pct ?? 0).toFixed(2)}%)</span>
         </div>
       </div>
-      ${postActions(item, showShare)}
     </div>`;
   }
 
-  if (item.item_type === 'video') {
-    const embed = item.media_url
-      ? `<div class="post-video-wrap post-body-collapsed"><iframe src="${item.media_url}" allowfullscreen loading="lazy"></iframe></div>`
-      : '';
-    return `
-    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
-      ${postMeta(item)}
-      <div class="post-header collapsible-trigger">
-        <div class="post-body">
-          <div class="post-text">
-            <div class="post-title">${item.title}</div>
-            ${item.summary ? `<div class="post-summary post-body-collapsed">${stripHtml(item.summary)}</div>` : ''}
-          </div>
-          <span class="expand-chevron">›</span>
-        </div>
-      </div>
-      ${embed}
-      ${postActions(item, showShare)}
-    </div>`;
-  }
-
-  // news / fact / default — collapsible body
   const thumb = item.thumbnail_url
     ? `<img class="post-thumb" src="${item.thumbnail_url}" alt="" loading="lazy" onerror="this.style.display='none'">`
-    : '';
-
-  const bodyContent = item.item_type === 'fact'
-    ? `<div class="post-digest post-body-collapsed">${item.content || ''}</div>`
-    : item.content
-      ? `<div class="post-digest post-body-collapsed">${item.content}</div>`
-      : item.summary
-        ? `<div class="post-digest post-body-collapsed">${stripHtml(item.summary)}</div>`
-        : '';
+    : (item.item_type === 'video' ? `<div class="post-thumb-placeholder">▶</div>` : '');
 
   return `
-    <div class="post-card" data-id="${item.id}" ${expandedAttr}>
-      ${postMeta(item)}
-      <div class="post-header collapsible-trigger">
-        <div class="post-body">
-          <div class="post-text">
-            <div class="post-title">${item.title}</div>
-          </div>
-          ${thumb}
-          <span class="expand-chevron">›</span>
-        </div>
+    <div class="post-card" data-id="${item.id}">
+      <div class="post-meta">
+        <span class="post-type-dot dot-${item.item_type}"></span>
+        <span class="post-source">${TYPE_LABELS[item.item_type] || item.item_type}</span>
+        ${item.source_name ? `<span class="post-source-sep">·</span><span>${item.source_name}</span>` : ''}
+        <span class="meta-spacer"></span>
+        ${tagPillsHtml(item.tags)}
       </div>
-      ${bodyContent}
-      ${postActions(item, showShare)}
+      <div class="post-body">
+        <div class="post-text">
+          <div class="post-title">${item.title}</div>
+        </div>
+        ${thumb}
+      </div>
     </div>`;
 }
 
-function attachCardListeners() {
-  // Expand/collapse on header click
-  document.querySelectorAll('.collapsible-trigger').forEach(header => {
-    header.addEventListener('click', () => {
-      const card = header.closest('.post-card');
-      const expanded = card.dataset.expanded === 'true';
-      card.dataset.expanded = expanded ? 'false' : 'true';
-    });
-  });
+// Full detail view rendered inside screen-detail
+function buildDetailView(item) {
+  const typeLabel = TYPE_LABELS[item.item_type] || item.item_type;
+  $('detail-header-type').textContent = typeLabel;
 
-  // Share buttons
-  document.querySelectorAll('.action-btn.share').forEach(btn => {
-    btn.addEventListener('click', async e => {
-      e.stopPropagation();
-      const url = `${window.location.origin}/shared/${btn.dataset.token}`;
-      let copied = false;
-      if (navigator.clipboard) {
-        try { await navigator.clipboard.writeText(url); copied = true; } catch {}
-      }
-      if (!copied) {
-        // Fallback for HTTP (clipboard API requires HTTPS)
-        const ta = document.createElement('textarea');
-        ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
-        document.body.appendChild(ta); ta.focus(); ta.select();
-        try { copied = document.execCommand('copy'); } catch {}
-        document.body.removeChild(ta);
-      }
-      showToast(copied ? 'Link copied!' : 'Copy failed — open share link manually');
+  let html = '';
+
+  // Hero image (not for video — we show the embed instead)
+  if (item.thumbnail_url && item.item_type !== 'video') {
+    html += `<img class="detail-hero" src="${item.thumbnail_url}" alt="" onerror="this.style.display='none'">`;
+  }
+
+  // Tags
+  if (item.tags && item.tags.length) {
+    html += `<div class="detail-tags">${tagPillsHtml(item.tags)}</div>`;
+  } else {
+    html += `<div style="height:20px"></div>`;
+  }
+
+  // Title
+  html += `<h1 class="detail-title">${item.title}</h1>`;
+
+  // Source line
+  const sourceParts = [item.source_name].filter(Boolean);
+  if (sourceParts.length) {
+    html += `<p class="detail-source">${sourceParts.join(' · ')}</p>`;
+  }
+
+  // Stock specific
+  if (item.item_type === 'stock') {
+    const dir = (item.stock_change ?? 0) >= 0 ? 'up' : 'down';
+    const arrow = dir === 'up' ? '▲' : '▼';
+    html += `<div class="detail-stock-row">
+      <span class="stock-ticker">${item.ticker}</span>
+      <span class="stock-price">$${item.stock_price?.toFixed(2)}</span>
+      <span class="stock-change ${dir}">${arrow} ${Math.abs(item.stock_change ?? 0).toFixed(2)} (${Math.abs(item.stock_change_pct ?? 0).toFixed(2)}%)</span>
+    </div>`;
+  }
+
+  // Video embed
+  if (item.item_type === 'video' && item.media_url) {
+    html += `<div class="detail-video"><iframe src="${item.media_url}" allowfullscreen loading="lazy"></iframe></div>`;
+  }
+
+  // Body text
+  const bodyText = item.content || (item.summary ? stripHtml(item.summary) : '');
+  if (bodyText) {
+    html += `<div class="detail-body">${bodyText}</div>`;
+  }
+
+  // Actions
+  const shareBtn = item.share_token ? `
+    <button class="btn btn-outline btn-sm detail-share-btn" data-token="${item.share_token}">
+      <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px"><path d="M15 8a3 3 0 10-2.977-2.63l-4.94 2.47a3 3 0 100 4.319l4.94 2.47a3 3 0 10.895-1.789l-4.94-2.47a3.027 3.027 0 000-.74l4.94-2.47C13.456 7.68 14.19 8 15 8z"/></svg>
+      Share
+    </button>` : '';
+  const extLink = item.source_url ? `
+    <a class="btn btn-primary btn-sm" href="${item.source_url}" target="_blank" rel="noopener">
+      <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px"><path d="M11 3a1 1 0 100 2h2.586l-6.293 6.293a1 1 0 101.414 1.414L15 6.414V9a1 1 0 102 0V4a1 1 0 00-1-1h-5z"/><path d="M5 5a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2v-3a1 1 0 10-2 0v3H5V7h3a1 1 0 000-2H5z"/></svg>
+      ${item.content ? 'Read original' : 'Open source'}
+    </a>` : '';
+  if (shareBtn || extLink) {
+    html += `<div class="detail-actions">${shareBtn}${extLink}</div>`;
+  }
+
+  $('detail-content').innerHTML = html;
+
+  // Attach share button listener
+  const shareEl = $('detail-content').querySelector('.detail-share-btn');
+  if (shareEl) {
+    shareEl.addEventListener('click', () => copyShareUrl(item.share_token));
+  }
+}
+
+async function copyShareUrl(token) {
+  const url = `${window.location.origin}/shared/${token}`;
+  let copied = false;
+  if (navigator.clipboard) {
+    try { await navigator.clipboard.writeText(url); copied = true; } catch {}
+  }
+  if (!copied) {
+    const ta = document.createElement('textarea');
+    ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.focus(); ta.select();
+    try { copied = document.execCommand('copy'); } catch {}
+    document.body.removeChild(ta);
+  }
+  showToast(copied ? 'Link copied!' : 'Copy failed — open share link manually');
+}
+
+function openDetail(item) {
+  buildDetailView(item);
+  showScreen('detail');
+  $('detail-content').parentElement.scrollTop = 0;
+}
+
+function attachCardListeners() {
+  document.querySelectorAll('#feed-list .post-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const id = Number(card.dataset.id);
+      const item = state.feed.find(i => i.id === id);
+      if (item) openDetail(item);
     });
   });
+}
+
+// Shared-page card (still uses full expanded view inline)
+function buildSharedCard(item) {
+  const bodyText = item.content || (item.summary ? stripHtml(item.summary) : '');
+  const thumb = item.thumbnail_url
+    ? `<img class="detail-hero" src="${item.thumbnail_url}" alt="" onerror="this.style.display='none'">`
+    : '';
+  const video = (item.item_type === 'video' && item.media_url)
+    ? `<div class="detail-video"><iframe src="${item.media_url}" allowfullscreen loading="lazy"></iframe></div>`
+    : '';
+  return `
+    <div class="post-card" style="cursor:default">
+      <div class="post-meta">
+        <span class="post-type-dot dot-${item.item_type}"></span>
+        <span class="post-source">${TYPE_LABELS[item.item_type] || item.item_type}</span>
+        ${item.source_name ? `<span class="post-source-sep">·</span><span>${item.source_name}</span>` : ''}
+        <span class="meta-spacer"></span>${tagPillsHtml(item.tags)}
+      </div>
+      ${thumb}${video}
+      <div style="padding:12px 14px">
+        <div class="post-title" style="font-size:18px;margin-bottom:10px">${item.title}</div>
+        ${bodyText ? `<div class="detail-body" style="border:none;padding:0">${bodyText}</div>` : ''}
+      </div>
+      ${item.source_url ? `<div class="post-actions"><a class="action-btn" href="${item.source_url}" target="_blank" rel="noopener">Open source</a></div>` : ''}
+    </div>`;
 }
 
 // ---- Refresh ----
@@ -381,6 +425,7 @@ async function triggerGenerate() {
 
 $('trigger-generate').addEventListener('click', triggerGenerate);
 $('logout-btn').addEventListener('click', logout);
+$('detail-back').addEventListener('click', () => showScreen('feed'));
 
 // ---- Bottom nav ----
 $('bnav-prev').addEventListener('click', goToPrevDate);
