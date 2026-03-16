@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  boonscroll:
+    build: .
+    container_name: boonscroll
+    restart: unless-stopped
+    ports:
+      - "8080:8000"
+    volumes:
+      - boonscroll_data:/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ITEMS_PER_USER=${ITEMS_PER_USER:-12}
+      - DB_PATH=/data/boonscroll.db
+      - FRONTEND_DIR=/app/frontend
+    env_file:
+      - .env
+
+volumes:
+  boonscroll_data:

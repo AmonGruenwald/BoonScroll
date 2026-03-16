@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BoonScroll</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- User selection screen -->
+    <div id="screen-users" class="screen active">
+      <div class="user-select-wrap">
+        <div class="logo">
+          <span class="logo-icon">🌿</span>
+          <h1>BoonScroll</h1>
+          <p class="tagline">Your daily dose. Nothing more.</p>
+        </div>
+        <div id="user-list" class="user-list"></div>
+        <button class="btn btn-ghost add-user-btn" id="show-add-user">+ Add person</button>
+      </div>
+    </div>
+
+    <!-- Add user modal -->
+    <div id="modal-add-user" class="modal hidden">
+      <div class="modal-box">
+        <h2>Who are you?</h2>
+        <div class="form-group">
+          <label>Display name</label>
+          <input type="text" id="new-display-name" placeholder="e.g. Alex" maxlength="50" />
+        </div>
+        <div class="form-group">
+          <label>Username (used in URLs)</label>
+          <input type="text" id="new-username" placeholder="e.g. alex" maxlength="30" pattern="[a-z0-9_-]+" />
+        </div>
+        <div class="form-group">
+          <label>Pick a color</label>
+          <div class="color-picker" id="color-picker"></div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" id="cancel-add-user">Cancel</button>
+          <button class="btn btn-primary" id="save-add-user">Create profile</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main feed screen -->
+    <div id="screen-feed" class="screen hidden">
+      <header class="app-header">
+        <div class="header-left">
+          <button class="back-btn" id="back-to-users">←</button>
+          <div class="header-user">
+            <div class="avatar" id="header-avatar"></div>
+            <span id="header-username"></span>
+          </div>
+        </div>
+        <div class="header-center">
+          <div class="date-nav">
+            <button class="date-arrow" id="prev-date">‹</button>
+            <span class="current-date" id="current-date-label"></span>
+            <button class="date-arrow" id="next-date">›</button>
+          </div>
+        </div>
+        <div class="header-right">
+          <button class="btn btn-sm btn-ghost" id="open-interests">Interests</button>
+          <button class="btn btn-sm btn-primary" id="trigger-generate">Refresh feed</button>
+        </div>
+      </header>
+
+      <main class="feed-main">
+        <div id="feed-empty" class="feed-empty hidden">
+          <div class="empty-icon">🌱</div>
+          <h2>No feed for this day yet</h2>
+          <p>Feeds are generated daily at 5:00 AM. You can trigger a manual refresh above.</p>
+        </div>
+        <div id="feed-loading" class="feed-loading hidden">
+          <div class="spinner"></div>
+          <p>Loading your feed…</p>
+        </div>
+        <div id="feed-grid" class="feed-grid"></div>
+      </main>
+    </div>
+
+    <!-- Interests panel -->
+    <div id="panel-interests" class="side-panel hidden">
+      <div class="panel-header">
+        <h2>Your interests</h2>
+        <button class="close-panel" id="close-interests">✕</button>
+      </div>
+      <p class="panel-hint">Describe what you care about. Be specific — the more detail, the better your feed.</p>
+      <div id="interests-list" class="interests-list"></div>
+      <div class="add-interest-form">
+        <textarea id="new-interest-text" placeholder="e.g. Formula 1 racing, especially technical regulations and strategy" rows="3"></textarea>
+        <button class="btn btn-primary" id="save-interest">Add interest</button>
+      </div>
+    </div>
+
+    <!-- Shared item screen -->
+    <div id="screen-shared" class="screen hidden">
+      <header class="app-header shared-header">
+        <div class="logo-small">🌿 BoonScroll</div>
+        <a href="/" class="btn btn-sm btn-ghost">Open app</a>
+      </header>
+      <main class="shared-main">
+        <div id="shared-card-wrap"></div>
+      </main>
+    </div>
+
+    <!-- Share toast -->
+    <div id="share-toast" class="toast hidden">Link copied to clipboard!</div>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
