@@ -2,13 +2,11 @@
 Feed generation engine — multi-phase news pipeline.
 
 Phase 0 : Filter RSS to items from the last 36 hours.
-Phase 1 : Fast model scores articles by relevance to user interests.
-Phase 2 : Fast model clusters relevant articles into N topic groups.
-Phase 3 : Main model synthesises each group into one long digest post (concurrent).
-Phase 4 : Extract the best image for each group (og:image scrape if RSS has none).
+Phase 1 : Pre-scrape top ~150 articles using trafilatura for high-quality body text.
+Phase 2 : Single fast-model call to simultaneously filter by interests AND cluster into groups.
+Phase 3 : Main model synthesises each group into one digest post (concurrent, reuses pre-scraped text).
 
 Videos  : Fast model picks the best N from YouTube feeds.
-Facts   : Main model generates interest-tailored facts.
 Stocks  : yfinance.
 """
 import os
@@ -45,11 +43,11 @@ _executor = ThreadPoolExecutor(max_workers=8)
 # Approximate seconds each phase takes — used for remaining-time estimates
 _PHASE_DURATIONS = {
     "fetching":     ("Fetching news from 60+ sources…",          15),
-    "filtering":    ("Filtering articles for your interests…",    8),
-    "grouping":     ("Grouping stories by topic…",                8),
-    "synthesizing": ("Writing your digest posts…",                35),
+    "scraping":     ("Reading article content…",                  25),
+    "filtering":    ("Finding stories for your interests…",       12),
+    "synthesizing": ("Writing your digest posts…",                30),
     "facts_videos": ("Selecting videos…",                         10),
-    "saving":       ("Saving your feed…",                         4),
+    "saving":       ("Saving your feed…",                          4),
 }
 _TOTAL_ESTIMATE_SECONDS = sum(d for _, d in _PHASE_DURATIONS.values())  # ~80 s
 
@@ -118,6 +116,7 @@ FAST_MODEL_ANTHROPIC  = os.environ.get("FAST_MODEL_ANTHROPIC",  "claude-haiku-4-
 
 ITEMS_PER_USER = int(os.environ.get("ITEMS_PER_USER", "12"))
 NEWS_RECENCY_HOURS = int(os.environ.get("NEWS_RECENCY_HOURS", "36"))
+PRE_SCRAPE_LIMIT = int(os.environ.get("PRE_SCRAPE_LIMIT", "150"))
 
 # ---------------------------------------------------------------------------
 # RSS sources
@@ -464,8 +463,27 @@ async def call_ai_fast(prompt: str, max_tokens: int = 512) -> str:
 # Article content fetching
 # ---------------------------------------------------------------------------
 
-def _extract_article_text(html: str, max_chars: int) -> str:
-    """Synchronous BeautifulSoup extraction — run in thread pool."""
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+
+def _extract_with_trafilatura(html: str, max_chars: int) -> str:
+    """Extract article body text using trafilatura (Mozilla Readability algorithm).
+    Falls back to BeautifulSoup if trafilatura yields nothing useful."""
+    try:
+        import trafilatura
+        text = trafilatura.extract(html, include_comments=False, include_tables=False)
+        if text and len(text.strip()) > 100:
+            return text.strip()[:max_chars]
+    except Exception:
+        pass
+    # BeautifulSoup fallback
     soup = BeautifulSoup(html, "lxml")
     for tag in soup(["script", "style", "nav", "header", "footer", "aside",
                       "form", "figure", "figcaption", "iframe", "noscript"]):
@@ -476,18 +494,37 @@ def _extract_article_text(html: str, max_chars: int) -> str:
     return " ".join(body.get_text(separator=" ").split())[:max_chars]
 
 
+def _fetch_with_cloudscraper(url: str, max_chars: int) -> str:
+    """Synchronous fallback fetch for Cloudflare/bot-protected sites."""
+    try:
+        import cloudscraper
+        scraper = cloudscraper.create_scraper()
+        resp = scraper.get(url, timeout=15)
+        if resp.status_code == 200:
+            return _extract_with_trafilatura(resp.text, max_chars)
+    except Exception:
+        pass
+    return ""
+
+
 async def fetch_article_text(url: str, max_chars: int = 4000) -> str:
     if not url:
         return ""
     try:
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0)"})
-            if resp.status_code != 200:
-                return ""
-        return await _in_thread(_extract_article_text, resp.text, max_chars)
+            resp = await client.get(url, headers=_BROWSER_HEADERS)
+        if resp.status_code == 200:
+            text = await _in_thread(_extract_with_trafilatura, resp.text, max_chars)
+            if text:
+                return text
+        if resp.status_code in (403, 429, 503):
+            # Try cloudscraper for Cloudflare/bot-protected sites
+            text = await _in_thread(_fetch_with_cloudscraper, url, max_chars)
+            if text:
+                return text
     except Exception as exc:
         log.debug("Article text fetch failed %s: %s", url, exc)
-        return ""
+    return ""
 
 
 def _extract_og_image(html: str) -> str | None:
@@ -504,7 +541,7 @@ async def fetch_og_image(url: str) -> str | None:
         return None
     try:
         async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0)"})
+            resp = await client.get(url, headers=_BROWSER_HEADERS)
             if resp.status_code != 200:
                 return None
         return await _in_thread(_extract_og_image, resp.text)
@@ -514,134 +551,124 @@ async def fetch_og_image(url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — Filter by interests (fast model)
+# Phase 1 — Pre-scrape article content
 # ---------------------------------------------------------------------------
 
-async def filter_by_interests(
-    news_items: list[tuple[str, dict]],
-    interests: list[str],
-    max_relevant: int = 35,
-) -> list[tuple[str, dict]]:
-    """Use a cheap model to strictly filter articles to only those matching user interests."""
-    if not news_items or not (OPENROUTER_API_KEY or ANTHROPIC_API_KEY):
-        return news_items[:max_relevant]
+async def pre_scrape_articles(
+    articles: list[tuple[str, dict]],
+    limit: int = PRE_SCRAPE_LIMIT,
+) -> dict[str, str]:
+    """Scrape article bodies for the most recent articles before AI processing.
 
-    interests_text = "\n".join(f"- {i}" for i in interests)
-
-    def _entry_line(i: int, src: str, e: dict) -> str:
-        title = e.get("title", "").strip()
-        snippet = strip_html(e.get("summary", ""))
-        snippet = " ".join(snippet.split())[:160]
-        return f"{i}: [{src}] {title}" + (f" — {snippet}" if snippet else "")
-
-    lines = [_entry_line(i, src, e) for i, (src, e) in enumerate(news_items[:120])]
-
-    prompt = f"""You are a STRICT relevance filter for a personal news feed.
-
-The user ONLY wants news about their specific interests — nothing else.
-
-USER'S INTERESTS:
-{interests_text}
-
-Score each article 0–10 using its title AND the short description:
-- 8–10: Directly and clearly about one of the user's interests
-- 6–7: Has a meaningful, specific connection to an interest
-- 0–5: Off-topic, generic, or only tangentially related → EXCLUDE
-
-STRICT RULES:
-- A user interested in "cooking" gets 0 for politics, sports, business, science (unless food science), crime, war, celebrity gossip.
-- A user interested in "cooking" gets 8+ for: recipes, restaurants, food trends, ingredients, chefs, kitchen tools, cuisine.
-- When in doubt, score 0. Missing a relevant article is better than including an irrelevant one.
-- Only return indices that score 6 or higher, ordered best-first.
-
-ARTICLES (index: [source] title — description):
-{chr(10).join(lines)}
-
-Return JSON only: {{"relevant": [list of integer indices, best-first]}}"""
-
-    try:
-        raw = await call_ai_fast(prompt, max_tokens=400)
-        data = parse_json_safely(raw)
-        if isinstance(data, dict) and "relevant" in data:
-            indices = [i for i in data["relevant"] if isinstance(i, int) and i < len(news_items)]
-            result = [news_items[i] for i in indices[:max_relevant]]
-            log.info("Phase 1: %d → %d relevant articles", len(news_items), len(result))
-            return result
-    except Exception as exc:
-        log.warning("Interest filtering failed: %s", exc)
-    return news_items[:max_relevant]
+    Returns a dict mapping url -> extracted text (empty string if scraping failed).
+    This runs before any AI call so the filter+group step has real article content
+    instead of RSS teasers.
+    """
+    candidates = articles[:limit]
+    urls = [e.get("link", "") for _, e in candidates]
+    texts = await asyncio.gather(*[fetch_article_text(url) for url in urls])
+    result: dict[str, str] = {}
+    successes = 0
+    for url, text in zip(urls, texts):
+        if url:
+            result[url] = text
+            if text:
+                successes += 1
+    log.info("Pre-scrape: %d/%d articles extracted successfully", successes, len(candidates))
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — Group by topic (fast model)
+# Phase 2 — Filter by interests AND group by topic (single fast-model call)
 # ---------------------------------------------------------------------------
 
-async def group_by_topic(
-    relevant: list[tuple[str, dict]],
+async def filter_and_group(
+    articles: list[tuple[str, dict]],
+    scraped_texts: dict[str, str],
     interests: list[str],
     n_groups: int = 6,
 ) -> list[dict]:
-    """Cluster relevant articles into topic groups, each with at least 2 articles."""
-    if not relevant:
+    """Single fast-model call: filter relevant articles AND cluster into topic groups.
+
+    Uses pre-scraped article body text for rich context — far better signal than
+    RSS teasers. Returns groups with at least 2 articles each.
+    """
+    if not articles:
         return []
     if not (OPENROUTER_API_KEY or ANTHROPIC_API_KEY):
-        # Fallback: pair up articles without AI
+        # Fallback: pair consecutive articles without AI
         groups = []
-        for i in range(0, min(len(relevant), n_groups * 2), 2):
-            pair = relevant[i:i+2]
+        for i in range(0, min(len(articles), n_groups * 2), 2):
+            pair = articles[i:i+2]
             if len(pair) >= 2:
                 groups.append({"topic": pair[0][1]["title"], "angle": "", "tags": interests[:1], "articles": pair})
         return groups[:n_groups]
 
     interests_text = "; ".join(interests)
-    lines = [f"{i}: [{src}] {e['title']}" for i, (src, e) in enumerate(relevant)]
 
-    prompt = f"""User interests: {interests_text}
+    def _snippet(i: int, src: str, e: dict) -> str:
+        url = e.get("link", "")
+        text = scraped_texts.get(url, "")
+        if not text:
+            text = strip_html(e.get("summary", ""))
+        excerpt = " ".join(text.split())[:250]
+        line = f"{i}: [{src}] {e.get('title', '').strip()}"
+        if excerpt:
+            line += f"\n   {excerpt}"
+        return line
 
-Group these news articles into up to {n_groups} topic clusters.
-STRICT RULES:
-- Each cluster MUST contain AT LEAST 2 articles. Never create a single-article cluster.
-- Combine 2-5 articles covering the same story or closely related theme.
-- ONLY create clusters that genuinely relate to the user's interests above.
-- Every cluster MUST have at least one tag matching the user's interest list (use exact wording).
+    lines = [_snippet(i, src, e) for i, (src, e) in enumerate(articles)]
 
-For each group list which of the user's interests it covers.
+    prompt = f"""You are curating a personalised news digest.
 
-Articles:
+User interests: {interests_text}
+
+Below are {len(articles)} recent news articles. In one step:
+1. Identify which articles match the user's interests (mentally score 0–10; keep only ≥6).
+2. Cluster the relevant articles into up to {n_groups} groups where each group covers the same story or a closely related theme.
+
+RULES:
+- Every group must contain AT LEAST 2 articles. Never create single-article groups.
+- Groups should have 2–5 articles covering the same story or closely related theme.
+- Only create groups that clearly relate to the user's interests.
+- Every group must have at least one tag using exact wording from the user's interest list.
+- Discard articles that don't match the user's interests.
+
+Articles (index: [source] title + body excerpt):
 {chr(10).join(lines)}
 
 Return JSON only:
-{{"groups": [{{"topic": "brief title", "angle": "why interesting for this user", "tags": ["exact interest label"], "indices": [0, 3, 7]}}]}}"""
+{{"groups": [{{"topic": "concise headline (≤10 words)", "angle": "why this matters to this reader", "tags": ["exact interest label"], "indices": [0, 3, 7]}}]}}"""
 
     try:
-        raw = await call_ai_fast(prompt, max_tokens=1200)
+        raw = await call_ai_fast(prompt, max_tokens=1500)
         data = parse_json_safely(raw)
         if isinstance(data, dict) and "groups" in data:
             groups = []
             for g in data["groups"]:
-                articles = [relevant[i] for i in g.get("indices", []) if i < len(relevant)]
-                if len(articles) >= 2:
+                group_articles = [articles[i] for i in g.get("indices", []) if i < len(articles)]
+                if len(group_articles) >= 2:
                     tags = g.get("tags") or []
-                    # Fallback: assign tags by matching interests against topic title
                     if not tags:
                         topic_lower = g.get("topic", "").lower()
-                        tags = [i for i in interests if any(w in topic_lower for w in i.lower().split())]
+                        tags = [interest for interest in interests
+                                if any(w in topic_lower for w in interest.lower().split())]
                     if not tags:
                         tags = interests[:1]
                     groups.append({
-                        "topic": g.get("topic", articles[0][1]["title"]),
+                        "topic": g.get("topic", group_articles[0][1]["title"]),
                         "angle": g.get("angle", ""),
                         "tags": tags,
-                        "articles": articles,
+                        "articles": group_articles,
                     })
-            log.info("Phase 2: grouped into %d topics (>=2 sources each)", len(groups))
+            log.info("filter_and_group: %d articles → %d topic groups", len(articles), len(groups))
             return groups[:n_groups]
     except Exception as exc:
-        log.warning("Topic grouping failed: %s", exc)
-    # Fallback: pair up articles
+        log.warning("filter_and_group failed: %s", exc)
+    # Fallback: pair consecutive articles
     groups = []
-    for i in range(0, min(len(relevant), n_groups * 2), 2):
-        pair = relevant[i:i+2]
+    for i in range(0, min(len(articles), n_groups * 2), 2):
+        pair = articles[i:i+2]
         if len(pair) >= 2:
             groups.append({"topic": pair[0][1]["title"], "angle": "", "tags": interests[:1], "articles": pair})
     return groups[:n_groups]
@@ -682,16 +709,26 @@ def _apply_interest_cap(groups: list[dict], interests: list[str], max_per_intere
 # Phase 3 — Synthesise topic group into one post (main model)
 # ---------------------------------------------------------------------------
 
-async def synthesize_topic_group(group: dict, interests: list[str] | None = None) -> dict | None:
-    """Fetch article texts and write a comprehensive digest for one topic group.
-    Returns None if no source content is available (post is skipped entirely)."""
+async def synthesize_topic_group(
+    group: dict,
+    interests: list[str] | None = None,
+    scraped_texts: dict[str, str] | None = None,
+) -> dict | None:
+    """Write a digest post for one topic group.
+
+    If scraped_texts is provided (pre-scraped dict mapping url->text), uses that
+    directly and skips re-fetching. Returns None if source content is too thin.
+    """
     topic    = group["topic"]
     angle    = group["angle"]
     tags     = group.get("tags", [])
     articles = group["articles"]
 
-    # Fetch article texts concurrently
-    texts = await asyncio.gather(*[fetch_article_text(e.get("link", "")) for _, e in articles])
+    # Use pre-scraped texts if available, otherwise fetch now
+    if scraped_texts is not None:
+        texts = [scraped_texts.get(e.get("link", ""), "") for _, e in articles]
+    else:
+        texts = await asyncio.gather(*[fetch_article_text(e.get("link", "")) for _, e in articles])
 
     # Find best thumbnail
     thumbnail = next((e.get("media_thumbnail") for _, e in articles if e.get("media_thumbnail")), None)
@@ -719,9 +756,13 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
     elif scrape_successes < len(articles):
         log.debug("Topic '%s': %d/%d sources scraped, rest used RSS summaries", topic, scrape_successes, len(articles))
 
-    # Skip post entirely if we have no content from any source
+    # Skip post if no content at all, or if total content is too thin to synthesise reliably
     if not source_blocks:
         log.info("Skipping topic '%s' — no source content available", topic)
+        return None
+    total_content_chars = sum(len(b) for b in source_blocks)
+    if total_content_chars < 300:
+        log.info("Skipping topic '%s' — source content too thin (%d chars)", topic, total_content_chars)
         return None
 
     sources_text = "\n\n---\n\n".join(source_blocks)
@@ -861,19 +902,25 @@ async def generate_feed_for_user(
 
     # --- Phases 1-3 and video selection run concurrently ---
     async def _build_news_items():
+        # Phase 1: Pre-scrape article content before any AI call
+        _set_phase("scraping")
+        candidates = recent_news[:PRE_SCRAPE_LIMIT]
+        scraped_texts = await pre_scrape_articles(candidates)
+
+        # Phase 2: Single AI call to filter relevant articles AND cluster into groups
         _set_phase("filtering")
-        # Fetch more candidates since we need 2+ articles per group
-        relevant     = await filter_by_interests(recent_news, interests, max_relevant=60)
-        _set_phase("grouping")
-        # Request more groups since interest cap may reduce them
-        topic_groups = await group_by_topic(relevant, interests, n_groups=n_news * 3)
+        # Request more groups than needed since interest cap may reduce them
+        topic_groups = await filter_and_group(candidates, scraped_texts, interests, n_groups=n_news * 3)
         # Enforce max 2 posts per interest (merge overflow into 2nd group)
         topic_groups = _apply_interest_cap(topic_groups, interests, max_per_interest=2)
-        # Limit to n_news after cap
         topic_groups = topic_groups[:n_news]
+
+        # Phase 3: Synthesise groups — text already fetched, no re-scraping needed
         _set_phase("synthesizing")
-        results = await asyncio.gather(*[synthesize_topic_group(g, interests) for g in topic_groups])
-        # Filter out None (groups with no source content)
+        results = await asyncio.gather(*[
+            synthesize_topic_group(g, interests, scraped_texts=scraped_texts)
+            for g in topic_groups
+        ])
         return [r for r in results if r is not None]
 
     synthesized_news, selected_vids = await asyncio.gather(
