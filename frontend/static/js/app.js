@@ -407,19 +407,38 @@ function buildSharedCard(item) {
 }
 
 // ---- Refresh ----
+let _regenPoller = null;
+
+function setRegenState(active) {
+  ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = active; });
+  $('regen-banner').classList.toggle('hidden', !active);
+}
+
 async function triggerGenerate() {
-  ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = true; });
+  if (_regenPoller) return; // already running
+  setRegenState(true);
   try {
     const d = state.feedDates[state.currentDateIdx];
+    const prevCount = state.feed.length;
     await api('/api/feed/generate', { method: 'POST', body: { feed_date: d } });
-    showToast('Generating… refresh in about 30 seconds', 4000);
-    setTimeout(async () => {
-      await loadFeedDates();
-      ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = false; });
-    }, 30000);
+
+    // Poll every 5 s until item count changes or 3 minutes pass
+    let elapsed = 0;
+    _regenPoller = setInterval(async () => {
+      elapsed += 5;
+      try {
+        const data = await api(`/api/users/${state.currentUser.id}/feed?feed_date=${d}`);
+        if (data.items.length !== prevCount || elapsed >= 180) {
+          clearInterval(_regenPoller); _regenPoller = null;
+          setRegenState(false);
+          await loadFeedDates();
+        }
+      } catch { /* network hiccup — keep polling */ }
+    }, 5000);
   } catch (e) {
+    _regenPoller = null;
+    setRegenState(false);
     showToast('Error: ' + e.message);
-    ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = false; });
   }
 }
 
