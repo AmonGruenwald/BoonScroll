@@ -834,9 +834,10 @@ async def generate_facts(interests: list[str], n: int = 1) -> list[dict]:
 
 Each fact should be genuinely surprising and educational — something worth sharing.
 Write 3–4 sentences per fact.
+For each fact also include a "tag" field: the single most relevant interest label from the list above, copied verbatim.
 
 Return JSON only:
-{{"facts": [{{"title": "short catchy title", "content": "the fact in 3–4 sentences"}}]}}"""
+{{"facts": [{{"title": "short catchy title", "content": "the fact in 3–4 sentences", "tag": "matching interest label"}}]}}"""
 
     try:
         text = await call_ai(prompt, max_tokens=400)
@@ -944,12 +945,19 @@ async def generate_feed_for_user(
             yt_embed = "https://www.youtube.com/embed/" + link.split("v=")[1].split("&")[0]
         elif "youtu.be/" in link:
             yt_embed = "https://www.youtube.com/embed/" + link.split("youtu.be/")[1].split("?")[0]
+        # Tag: first interest whose keywords appear in the title, else first interest
+        vid_title_lower = entry["title"].lower()
+        vid_tag = next(
+            (i for i in interests if any(w in vid_title_lower for w in i.lower().split())),
+            interests[0] if interests else None,
+        )
         items_to_save.append(FeedItem(
             user_id=user.id, feed_date=feed_date, item_type="video",
             title=entry["title"][:499],
             summary=entry.get("summary", "")[:2000],
             source_url=link, media_url=yt_embed,
             source_name=src_name, position=pos,
+            tags=vid_tag,
             share_token=make_share_token(user.id, feed_date, pos),
         ))
         pos += 1
