@@ -416,6 +416,20 @@ let _regenPoller = null;
 function setRegenState(active) {
   ['trigger-generate', 'bnav-refresh'].forEach(id => { const el = $(id); if (el) el.disabled = active; });
   $('regen-banner').classList.toggle('hidden', !active);
+  if (!active) {
+    $('regen-label').textContent = 'Generating your feed…';
+    $('regen-time').textContent = '';
+  }
+}
+
+function updateRegenBanner(label, remainingSeconds) {
+  if (label) $('regen-label').textContent = label;
+  const timeEl = $('regen-time');
+  if (remainingSeconds > 0) {
+    timeEl.textContent = `~${remainingSeconds}s`;
+  } else {
+    timeEl.textContent = '';
+  }
 }
 
 async function triggerGenerate() {
@@ -426,11 +440,17 @@ async function triggerGenerate() {
     const prevCount = state.feed.length;
     await api('/api/feed/generate', { method: 'POST', body: { feed_date: d } });
 
-    // Poll every 5 s until item count changes or 3 minutes pass
+    // Poll every 2 s: update status banner + check if feed is ready
     let elapsed = 0;
     _regenPoller = setInterval(async () => {
-      elapsed += 5;
+      elapsed += 2;
       try {
+        // Update status label and time estimate from backend
+        const status = await api('/api/feed/status');
+        if (status.active) {
+          updateRegenBanner(status.label, status.remaining_seconds);
+        }
+        // Check if feed has been updated
         const data = await api(`/api/users/${state.currentUser.id}/feed?feed_date=${d}`);
         if (data.items.length !== prevCount || elapsed >= 180) {
           clearInterval(_regenPoller); _regenPoller = null;
@@ -438,7 +458,7 @@ async function triggerGenerate() {
           await loadFeedDates();
         }
       } catch { /* network hiccup — keep polling */ }
-    }, 5000);
+    }, 2000);
   } catch (e) {
     _regenPoller = null;
     setRegenState(false);

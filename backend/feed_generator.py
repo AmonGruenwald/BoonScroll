@@ -38,6 +38,62 @@ log = logging.getLogger("feed_generator")
 # so they never block the async event loop
 _executor = ThreadPoolExecutor(max_workers=8)
 
+# ---------------------------------------------------------------------------
+# Generation status tracking (in-memory, global)
+# ---------------------------------------------------------------------------
+
+# Approximate seconds each phase takes — used for remaining-time estimates
+_PHASE_DURATIONS = {
+    "fetching":     ("Fetching news from 60+ sources…",          15),
+    "filtering":    ("Filtering articles for your interests…",    8),
+    "grouping":     ("Grouping stories by topic…",                8),
+    "synthesizing": ("Writing your digest posts…",                35),
+    "facts_videos": ("Selecting videos & generating facts…",      10),
+    "saving":       ("Saving your feed…",                         4),
+}
+_TOTAL_ESTIMATE_SECONDS = sum(d for _, d in _PHASE_DURATIONS.values())  # ~80 s
+
+_gen_status: dict = {
+    "active": False,
+    "phase": "",
+    "label": "",
+    "started_at": None,   # float (time.monotonic)
+    "phase_started_at": None,
+}
+
+
+def _set_phase(phase: str) -> None:
+    """Update the global generation status to the given phase."""
+    label = _PHASE_DURATIONS.get(phase, ("Working…", 0))[0]
+    _gen_status.update({
+        "active": True,
+        "phase": phase,
+        "label": label,
+        "phase_started_at": _time.monotonic(),
+    })
+    if _gen_status.get("started_at") is None:
+        _gen_status["started_at"] = _time.monotonic()
+    log.info("Generation phase: %s", phase)
+
+
+def _clear_phase() -> None:
+    _gen_status.update({"active": False, "phase": "done", "label": "Done!", "started_at": None})
+
+
+def get_generation_status() -> dict:
+    """Return a snapshot of the current generation status for the API."""
+    st = dict(_gen_status)
+    elapsed = (_time.monotonic() - st["started_at"]) if st.get("started_at") else 0
+    remaining = max(0, _TOTAL_ESTIMATE_SECONDS - int(elapsed))
+    return {
+        "active": st["active"],
+        "phase": st["phase"],
+        "label": st["label"],
+        "elapsed_seconds": int(elapsed),
+        "remaining_seconds": remaining,
+        "total_estimate_seconds": _TOTAL_ESTIMATE_SECONDS,
+    }
+
 
 def _in_thread(fn, *args):
     """Run a synchronous callable in the thread pool and await the result."""
@@ -825,14 +881,17 @@ async def generate_feed_for_user(
 
     # --- Phases 1-3 and video selection run concurrently ---
     async def _build_news_items():
+        _set_phase("filtering")
         # Fetch more candidates since we need 2+ articles per group
         relevant     = await filter_by_interests(recent_news, interests, max_relevant=60)
+        _set_phase("grouping")
         # Request more groups since interest cap may reduce them
         topic_groups = await group_by_topic(relevant, interests, n_groups=n_news * 3)
         # Enforce max 2 posts per interest (merge overflow into 2nd group)
         topic_groups = _apply_interest_cap(topic_groups, interests, max_per_interest=2)
         # Limit to n_news after cap
         topic_groups = topic_groups[:n_news]
+        _set_phase("synthesizing")
         results = await asyncio.gather(*[synthesize_topic_group(g, interests) for g in topic_groups])
         # Filter out None (groups with no source content)
         return [r for r in results if r is not None]
@@ -929,6 +988,8 @@ async def generate_all_feeds(session: AsyncSession, feed_date: Optional[date] = 
     if feed_date is None:
         feed_date = date.today()
 
+    _gen_status["started_at"] = _time.monotonic()
+    _set_phase("fetching")
     log.info("Starting feed generation for %s", feed_date)
     all_news, all_videos = await asyncio.gather(fetch_all_news(), fetch_all_videos())
     log.info("Fetched %d news items, %d videos", len(all_news), len(all_videos))
@@ -944,4 +1005,6 @@ async def generate_all_feeds(session: AsyncSession, feed_date: Optional[date] = 
         except Exception as exc:
             log.error("Failed to generate feed for %s: %s", user.name, exc)
 
+    _set_phase("saving")
     log.info("Feed generation complete for %s", feed_date)
+    _clear_phase()

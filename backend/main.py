@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from database import get_db, init_db
 from models import User, Interest, FeedItem
-from feed_generator import generate_all_feeds
+from feed_generator import generate_all_feeds, get_generation_status
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("main")
@@ -283,6 +283,12 @@ async def trigger_feed_generation(body: FeedTriggerRequest):
     import asyncio
     asyncio.create_task(_run())
     return {"ok": True, "message": f"Feed generation started for {target_date or date.today()}"}
+
+
+@app.get("/api/feed/status")
+async def get_feed_status():
+    """Return current feed generation status (phase label + time estimate)."""
+    return get_generation_status()
 
 
 # ---------------------------------------------------------------------------

@@ -436,6 +436,11 @@ button { font-family: var(--font); }
   padding: 9px 16px; font-size: 13px; font-weight: 600;
   z-index: 49; letter-spacing: .1px;
 }
+.regen-time {
+  opacity: .75; font-weight: 500; font-size: 12px;
+  background: rgba(0,0,0,.18); border-radius: 100px;
+  padding: 2px 8px; white-space: nowrap;
+}
 .regen-banner.hidden { display: none; }
 .regen-dot {
   width: 8px; height: 8px; border-radius: 50%; background: white;
