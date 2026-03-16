@@ -69,12 +69,40 @@ NEWS_FEEDS = [
 ]
 
 YOUTUBE_FEEDS = [
-    ("Kurzgesagt",      "https://www.youtube.com/feeds/videos.xml?channel_id=UCsXVk37bltHxD1rDPwtNM8Q"),
-    ("Veritasium",      "https://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA"),
-    ("Mark Rober",      "https://www.youtube.com/feeds/videos.xml?channel_id=UCY1kMZp36IQSyNx_9h4mpCg"),
-    ("Smarter Every Day","https://www.youtube.com/feeds/videos.xml?channel_id=UC6107grRI4m0o2-emgoDnAA"),
-    ("3Blue1Brown",     "https://www.youtube.com/feeds/videos.xml?channel_id=UCYO_jab_esuFRV4b17AJtAg"),
-    ("CGP Grey",        "https://www.youtube.com/feeds/videos.xml?channel_id=UC2C_jShtL725hvbm1arSV9w"),
+    # Science & space
+    ("Kurzgesagt",        "https://www.youtube.com/feeds/videos.xml?channel_id=UCsXVk37bltHxD1rDPwtNM8Q"),
+    ("Veritasium",        "https://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA"),
+    ("Smarter Every Day", "https://www.youtube.com/feeds/videos.xml?channel_id=UC6107grRI4m0o2-emgoDnAA"),
+    ("3Blue1Brown",       "https://www.youtube.com/feeds/videos.xml?channel_id=UCYO_jab_esuFRV4b17AJtAg"),
+    ("SciShow",           "https://www.youtube.com/feeds/videos.xml?channel_id=UCZYTClx2T1of7BRZ86-8fow"),
+    ("NASA",              "https://www.youtube.com/feeds/videos.xml?channel_id=UCLA_DiR1FfKNvjuUpBHmylQ"),
+    # Tech & engineering
+    ("Linus Tech Tips",   "https://www.youtube.com/feeds/videos.xml?channel_id=UCXuqSBlHAE6Xw-yeJA0Tunw"),
+    ("Mark Rober",        "https://www.youtube.com/feeds/videos.xml?channel_id=UCY1kMZp36IQSyNx_9h4mpCg"),
+    ("CGP Grey",          "https://www.youtube.com/feeds/videos.xml?channel_id=UC2C_jShtL725hvbm1arSV9w"),
+    ("Fireship",          "https://www.youtube.com/feeds/videos.xml?channel_id=UCsBjURrPoezykLs9EqgamOA"),
+    ("Two Minute Papers", "https://www.youtube.com/feeds/videos.xml?channel_id=UCbfYPyITQ-7l4upoX8nvctg"),
+    # Cooking & food
+    ("Binging with Babish",   "https://www.youtube.com/feeds/videos.xml?channel_id=UCJHA_jMfCvEnv-3kRjTCQXw"),
+    ("Joshua Weissman",       "https://www.youtube.com/feeds/videos.xml?channel_id=UChBEbMKI1eCcejTtmI32UEw"),
+    ("Internet Shaquille",    "https://www.youtube.com/feeds/videos.xml?channel_id=UCEIKfkyGFD1EMwkiQqmYhkA"),
+    ("Pro Home Cooks",        "https://www.youtube.com/feeds/videos.xml?channel_id=UCCMxHHciWRBBouzk-PGzmtQ"),
+    # Finance & economics
+    ("Plain Bagel",       "https://www.youtube.com/feeds/videos.xml?channel_id=UCFCEuCsyWP0YkP3CZ3Mr01Q"),
+    ("Patrick Boyle",     "https://www.youtube.com/feeds/videos.xml?channel_id=UCASM_PTnGsVnLeEccID6HFw"),
+    ("Andrei Jikh",       "https://www.youtube.com/feeds/videos.xml?channel_id=UCGy7SkBjcIAgTiwkXEtPnYg"),
+    # Sports & fitness
+    ("GQ Sports",         "https://www.youtube.com/feeds/videos.xml?channel_id=UCIRYBXDze5krPDzAEOxFGVA"),
+    ("Global Cycling Network","https://www.youtube.com/feeds/videos.xml?channel_id=UCuTaETsuCOkJ0H_kqoAinad"),
+    # History & culture
+    ("Oversimplified",    "https://www.youtube.com/feeds/videos.xml?channel_id=UCNIuvl7V8zACPpTmmNIqioA"),
+    ("Toldinstone",       "https://www.youtube.com/feeds/videos.xml?channel_id=UCjA5GZDEsGMKCjPSDBL4bSg"),
+    # Gaming
+    ("Noclip",            "https://www.youtube.com/feeds/videos.xml?channel_id=UC0fDG3byEcMtbOqPMymDNbw"),
+    ("GMTK",              "https://www.youtube.com/feeds/videos.xml?channel_id=UCqJ-Xo29CKyLTjn6z2XwYAw"),
+    # Environment & travel
+    ("Real Engineering",  "https://www.youtube.com/feeds/videos.xml?channel_id=UCR1IuLEqb6UEA_zQ81kwXfg"),
+    ("Wendover Productions","https://www.youtube.com/feeds/videos.xml?channel_id=UC9RM-iSvTu1uPJb8X5yp3EQ"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -312,7 +340,14 @@ async def filter_by_interests(
         return news_items[:max_relevant]
 
     interests_text = "\n".join(f"- {i}" for i in interests)
-    lines = [f"{i}: {e['title']}" for i, (_, e) in enumerate(news_items[:120])]
+
+    def _entry_line(i: int, src: str, e: dict) -> str:
+        title = e.get("title", "").strip()
+        snippet = BeautifulSoup(e.get("summary", ""), "lxml").get_text(separator=" ")
+        snippet = " ".join(snippet.split())[:160]
+        return f"{i}: [{src}] {title}" + (f" — {snippet}" if snippet else "")
+
+    lines = [_entry_line(i, src, e) for i, (src, e) in enumerate(news_items[:120])]
 
     prompt = f"""You are a STRICT relevance filter for a personal news feed.
 
@@ -321,7 +356,7 @@ The user ONLY wants news about their specific interests — nothing else.
 USER'S INTERESTS:
 {interests_text}
 
-Score each headline 0–10:
+Score each article 0–10 using its title AND the short description:
 - 8–10: Directly and clearly about one of the user's interests
 - 6–7: Has a meaningful, specific connection to an interest
 - 0–5: Off-topic, generic, or only tangentially related → EXCLUDE
@@ -332,7 +367,7 @@ STRICT RULES:
 - When in doubt, score 0. Missing a relevant article is better than including an irrelevant one.
 - Only return indices that score 6 or higher, ordered best-first.
 
-HEADLINES:
+ARTICLES (index: [source] title — description):
 {chr(10).join(lines)}
 
 Return JSON only: {{"relevant": [list of integer indices, best-first]}}"""
@@ -408,7 +443,7 @@ Return JSON only:
 # Phase 3 — Synthesise topic group into one post (main model)
 # ---------------------------------------------------------------------------
 
-async def synthesize_topic_group(group: dict) -> dict:
+async def synthesize_topic_group(group: dict, interests: list[str] | None = None) -> dict:
     """Fetch article texts and write a comprehensive digest for one topic group."""
     topic    = group["topic"]
     angle    = group["angle"]
@@ -446,19 +481,29 @@ async def synthesize_topic_group(group: dict) -> dict:
     source_names = list(dict.fromkeys(src for src, _ in articles))
     source_url   = articles[0][1].get("link")
 
-    prompt = f"""Write a comprehensive news digest post about this topic: {topic}
+    reader_context = ""
+    if interests:
+        reader_context = f"\nThe reader's interests: {'; '.join(interests)}\nFrame and emphasise the parts of this story most relevant to those interests.\n"
 
-Why this matters to the reader: {angle}
+    prompt = f"""You are writing a digest post for a personal news app.
 
+Topic: {topic}
+Why it matters to this reader: {angle}{reader_context}
 Source material:
 {sources_text}
 
-Write 5–8 well-structured sentences (120–180 words). Synthesise information across all sources.
-Be factual, engaging, and journalistic. Do not start with "This article" or "According to".
-Do not use bullet points. Write in flowing prose."""
+Write a digest of 150–220 words (6–9 sentences) that:
+- Opens with the most important or surprising fact — not "According to" or "This article"
+- Synthesises details from ALL provided sources, not just one
+- Uses specific numbers, names, and details (avoid vague generalities)
+- Frames the story from the angle most relevant to the reader's interests
+- Ends with one sentence of forward-looking context (what happens next, why it matters long-term)
+- Reads like a well-informed friend explaining the story, not a press release
+
+Write in flowing prose. No bullet points. No subheadings."""
 
     try:
-        content = (await call_ai(prompt, max_tokens=400)).strip()
+        content = (await call_ai(prompt, max_tokens=600)).strip()
     except Exception as exc:
         log.warning("Synthesis failed for '%s': %s", topic, exc)
         content = articles[0][1].get("summary", "")
@@ -488,9 +533,13 @@ async def select_videos(
     interests_text = "; ".join(interests)
     lines = [f"{i}: [{src}] {e['title']}" for i, (src, e) in enumerate(all_videos[:40])]
 
-    prompt = f"""User interests: {interests_text}
+    prompt = f"""You are picking YouTube videos for a personal feed.
 
-Pick the {n} most relevant or generally fascinating YouTube videos for this user.
+User interests: {interests_text}
+
+Select exactly {n} videos that best match the user's specific interests above.
+Prefer videos that directly relate to an interest over generic "fascinating" picks.
+Only fall back to broadly interesting videos if nothing matches an interest.
 
 Videos:
 {chr(10).join(lines)}
@@ -571,7 +620,7 @@ async def generate_feed_for_user(
     async def _build_news_items():
         relevant     = await filter_by_interests(recent_news, interests, max_relevant=35)
         topic_groups = await group_by_topic(relevant, interests, n_groups=n_news)
-        return await asyncio.gather(*[synthesize_topic_group(g) for g in topic_groups])
+        return await asyncio.gather(*[synthesize_topic_group(g, interests) for g in topic_groups])
 
     synthesized_news, selected_vids, facts = await asyncio.gather(
         _build_news_items(),
