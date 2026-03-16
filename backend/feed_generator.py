@@ -12,12 +12,14 @@ Facts   : Main model generates interest-tailored facts.
 Stocks  : yfinance.
 """
 import os
+import re
 import hashlib
 import secrets
 import asyncio
 import logging
 import time as _time
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone, timedelta
 from typing import Optional
 
@@ -31,6 +33,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from models import User, Interest, FeedItem
 
 log = logging.getLogger("feed_generator")
+
+# Thread pool for CPU-bound sync work (feedparser, BeautifulSoup)
+# so they never block the async event loop
+_executor = ThreadPoolExecutor(max_workers=8)
+
+
+def _in_thread(fn, *args):
+    """Run a synchronous callable in the thread pool and await the result."""
+    loop = asyncio.get_event_loop()
+    return loop.run_in_executor(_executor, fn, *args)
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def strip_html(text: str) -> str:
+    """Fast HTML-tag stripper for short strings (RSS summaries, etc.)."""
+    return " ".join(_HTML_TAG_RE.sub(" ", text).split())
 
 # ---------------------------------------------------------------------------
 # Config
@@ -201,25 +220,31 @@ def parse_json_safely(text: str) -> dict | list | None:
 # RSS fetching
 # ---------------------------------------------------------------------------
 
+def _parse_feed(text: str) -> list[dict]:
+    """Synchronous feedparser call — run in thread pool."""
+    parsed = feedparser.parse(text)
+    entries = []
+    for e in parsed.entries[:30]:
+        entries.append({
+            "title": e.get("title", ""),
+            "summary": e.get("summary", e.get("description", "")),
+            "link": e.get("link", ""),
+            "published": e.get("published", ""),
+            "published_parsed": e.get("published_parsed"),
+            "media_thumbnail": (
+                e.get("media_thumbnail", [{}])[0].get("url")
+                if e.get("media_thumbnail") else None
+            ),
+        })
+    return entries
+
+
 async def fetch_feed(url: str) -> list[dict]:
     try:
         async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": "BoonScroll/1.0"})
-            parsed = feedparser.parse(resp.text)
-            entries = []
-            for e in parsed.entries[:30]:
-                entries.append({
-                    "title": e.get("title", ""),
-                    "summary": e.get("summary", e.get("description", "")),
-                    "link": e.get("link", ""),
-                    "published": e.get("published", ""),
-                    "published_parsed": e.get("published_parsed"),  # time.struct_time
-                    "media_thumbnail": (
-                        e.get("media_thumbnail", [{}])[0].get("url")
-                        if e.get("media_thumbnail") else None
-                    ),
-                })
-            return entries
+        # feedparser is CPU-bound — run off the event loop
+        return await _in_thread(_parse_feed, resp.text)
     except Exception as exc:
         log.warning("Failed to fetch %s: %s", url, exc)
         return []
@@ -359,26 +384,38 @@ async def call_ai_fast(prompt: str, max_tokens: int = 512) -> str:
 # Article content fetching
 # ---------------------------------------------------------------------------
 
+def _extract_article_text(html: str, max_chars: int) -> str:
+    """Synchronous BeautifulSoup extraction — run in thread pool."""
+    soup = BeautifulSoup(html, "lxml")
+    for tag in soup(["script", "style", "nav", "header", "footer", "aside",
+                      "form", "figure", "figcaption", "iframe", "noscript"]):
+        tag.decompose()
+    body = soup.find("article") or soup.find("main") or soup.body
+    if not body:
+        return ""
+    return " ".join(body.get_text(separator=" ").split())[:max_chars]
+
+
 async def fetch_article_text(url: str, max_chars: int = 4000) -> str:
     if not url:
         return ""
     try:
         async with httpx.AsyncClient(timeout=12, follow_redirects=True) as client:
-            headers = {"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0)"}
-            resp = await client.get(url, headers=headers)
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0)"})
             if resp.status_code != 200:
                 return ""
-        soup = BeautifulSoup(resp.text, "lxml")
-        for tag in soup(["script", "style", "nav", "header", "footer", "aside",
-                          "form", "figure", "figcaption", "iframe", "noscript"]):
-            tag.decompose()
-        body = soup.find("article") or soup.find("main") or soup.body
-        if not body:
-            return ""
-        return " ".join(body.get_text(separator=" ").split())[:max_chars]
+        return await _in_thread(_extract_article_text, resp.text, max_chars)
     except Exception as exc:
         log.debug("Article text fetch failed %s: %s", url, exc)
         return ""
+
+
+def _extract_og_image(html: str) -> str | None:
+    """Synchronous og:image extraction — run in thread pool."""
+    soup = BeautifulSoup(html, "lxml")
+    tag = (soup.find("meta", property="og:image") or
+           soup.find("meta", attrs={"name": "twitter:image"}))
+    return tag.get("content") if tag else None
 
 
 async def fetch_og_image(url: str) -> str | None:
@@ -390,11 +427,7 @@ async def fetch_og_image(url: str) -> str | None:
             resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (compatible; BoonScroll/1.0)"})
             if resp.status_code != 200:
                 return None
-        soup = BeautifulSoup(resp.text, "lxml")
-        tag = (soup.find("meta", property="og:image") or
-               soup.find("meta", attrs={"name": "twitter:image"}))
-        if tag:
-            return tag.get("content")
+        return await _in_thread(_extract_og_image, resp.text)
     except Exception:
         pass
     return None
@@ -417,7 +450,7 @@ async def filter_by_interests(
 
     def _entry_line(i: int, src: str, e: dict) -> str:
         title = e.get("title", "").strip()
-        snippet = BeautifulSoup(e.get("summary", ""), "lxml").get_text(separator=" ")
+        snippet = strip_html(e.get("summary", ""))
         snippet = " ".join(snippet.split())[:160]
         return f"{i}: [{src}] {title}" + (f" — {snippet}" if snippet else "")
 
@@ -543,8 +576,7 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
         else:
             # Strip HTML from RSS summary and use it as fallback
             raw_summary = e.get("summary", "")
-            body = BeautifulSoup(raw_summary, "lxml").get_text(separator=" ")
-            body = " ".join(body.split())[:600]
+            body = strip_html(raw_summary)[:600]
         if body:
             source_blocks.append(f"Source: {src}\nTitle: {e['title']}\n{body}")
 
@@ -557,7 +589,7 @@ async def synthesize_topic_group(group: dict, interests: list[str] | None = None
         src_name, entry = articles[0]
         return {
             "title": topic,
-            "content": BeautifulSoup(entry.get("summary", ""), "lxml").get_text(separator=" ")[:500],
+            "content": strip_html(entry.get("summary", ""))[:500],
             "thumbnail_url": thumbnail,
             "source_url": entry.get("link"),
             "source_name": src_name,
