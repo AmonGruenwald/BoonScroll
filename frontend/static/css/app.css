@@ -371,13 +371,13 @@ button { font-family: var(--font); }
 .user-delete-btn {
   position: absolute; top: 6px; right: 6px;
   background: none; border: none; cursor: pointer;
-  width: 22px; height: 22px; border-radius: 50%;
+  width: 24px; height: 24px; border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   font-size: 14px; line-height: 1; color: var(--text-muted);
-  opacity: 0; transition: opacity .15s, background .15s, color .15s;
+  transition: background .15s, color .15s;
+  z-index: 1;
 }
-.user-card:hover .user-delete-btn { opacity: 1; }
-.user-delete-btn:hover { background: #FDECEA; color: var(--red); }
+.user-delete-btn:hover, .user-delete-btn:focus { background: #FDECEA; color: var(--red); outline: none; }
 
 /* ===== Toast ===== */
 .toast {
