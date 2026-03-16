@@ -4,10 +4,12 @@
 const API = '';
 
 const AVATAR_COLORS = [
-  '#FF4500', '#FF6314', '#46D160', '#0DD3BB',
-  '#7193FF', '#FF585B', '#FFB000', '#46A2DA',
-  '#FF66AC', '#878A8C',
+  '#1F6B47', '#2E6B8A', '#7A3B6E', '#B05A1A',
+  '#5A3B8A', '#1A6B6B', '#8A5A1A', '#3B5A8A',
+  '#6B1A3B', '#4A6B3B',
 ];
+
+const USER_STORAGE_KEY = 'boonscroll_user_id';
 
 // ---- State ----
 let state = {
@@ -121,12 +123,19 @@ function renderUserList() {
 async function selectUser(userId) {
   const user = await api(`/api/users/${userId}`);
   state.currentUser = user;
-  const av = $('header-avatar');
-  av.style.background = user.avatar_color;
-  av.textContent = avatarInitials(user.display_name);
+  localStorage.setItem(USER_STORAGE_KEY, String(userId));
   await loadFeedDates();
   showScreen('feed');
   renderInterests();
+}
+
+function logout() {
+  localStorage.removeItem(USER_STORAGE_KEY);
+  state.currentUser = null;
+  state.feed = [];
+  $('panel-interests').classList.add('hidden');
+  showScreen('users');
+  loadUsers();
 }
 
 // ---- Feed dates ----
@@ -340,21 +349,15 @@ async function triggerGenerate() {
 
 $('trigger-generate').addEventListener('click', triggerGenerate);
 
-// ---- Back to users ----
-$('back-to-users').addEventListener('click', () => {
-  state.currentUser = null; state.feed = [];
-  showScreen('users'); loadUsers();
-});
+// ---- Logout / switch user ----
+$('logout-btn').addEventListener('click', logout);
 
 // ---- Bottom nav wiring ----
 $('bnav-prev').addEventListener('click', goToPrevDate);
 $('bnav-next').addEventListener('click', goToNextDate);
 $('bnav-refresh').addEventListener('click', triggerGenerate);
 $('bnav-interests').addEventListener('click', openInterests);
-$('bnav-user').addEventListener('click', () => {
-  state.currentUser = null; state.feed = [];
-  showScreen('users'); loadUsers();
-});
+$('bnav-logout').addEventListener('click', logout);
 
 // ---- Interests panel ----
 $('open-interests').addEventListener('click', openInterests);
@@ -431,6 +434,18 @@ $('save-add-user').addEventListener('click', async () => {
 // ---- Init ----
 (async function init() {
   if (checkSharedRoute()) return;
+
+  const storedId = localStorage.getItem(USER_STORAGE_KEY);
+  if (storedId) {
+    try {
+      await selectUser(Number(storedId));
+      return;
+    } catch {
+      // User may have been deleted — fall through to user select
+      localStorage.removeItem(USER_STORAGE_KEY);
+    }
+  }
+
   showScreen('users');
   await loadUsers();
 })();
