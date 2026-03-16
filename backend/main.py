@@ -263,7 +263,7 @@ async def get_feed_dates(user_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @app.post("/api/feed/generate")
-async def trigger_feed_generation(body: FeedTriggerRequest, db: AsyncSession = Depends(get_db)):
+async def trigger_feed_generation(body: FeedTriggerRequest):
     """Manually trigger feed generation (for testing or re-runs)."""
     target_date = None
     if body.feed_date:
@@ -272,8 +272,13 @@ async def trigger_feed_generation(body: FeedTriggerRequest, db: AsyncSession = D
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format")
 
+    async def _run():
+        from database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
+            await generate_all_feeds(session, target_date)
+
     import asyncio
-    asyncio.create_task(generate_all_feeds(db, target_date))
+    asyncio.create_task(_run())
     return {"ok": True, "message": f"Feed generation started for {target_date or date.today()}"}
 
 
