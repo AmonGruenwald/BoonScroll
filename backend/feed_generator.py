@@ -749,21 +749,25 @@ Why it matters to this reader: {angle}{reader_context}
 Source material:
 {sources_text}
 
-Write a digest of 150–220 words (6–9 sentences) that:
-- Opens with the most important or surprising fact — not "According to" or "This article"
-- Synthesises details from ALL provided sources, not just one
-- Uses specific numbers, names, and details where available (avoid vague generalities)
-- Frames the story from the angle most relevant to the reader's interests
-- Ends with one sentence of forward-looking context (what happens next, why it matters long-term)
-- Reads like a well-informed friend explaining the story, not a press release
-
-Write in flowing prose. No bullet points. No subheadings."""
+Return JSON only with two fields:
+{{
+  "title": "A specific, informative headline (max 12 words). Include a key detail — a name, number, country, or concrete outcome. No clickbait. No vague phrases like 'everything you need to know'.",
+  "content": "A digest of 150–220 words (6–9 sentences) that:\\n- Opens with the most important or surprising fact — not 'According to' or 'This article'\\n- Synthesises details from ALL provided sources, not just one\\n- Uses specific numbers, names, and details where available\\n- Frames the story from the angle most relevant to the reader's interests\\n- Ends with one sentence of forward-looking context\\n- Reads like a well-informed friend explaining the story, not a press release\\n- Flowing prose. No bullet points. No subheadings."
+}}"""
 
     try:
-        synth_content = (await call_ai(prompt, max_tokens=600)).strip()
+        raw = (await call_ai(prompt, max_tokens=700)).strip()
+        parsed = parse_json_safely(raw)
+        if isinstance(parsed, dict) and parsed.get("title") and parsed.get("content"):
+            synth_title   = parsed["title"].strip()
+            synth_content = parsed["content"].strip()
+        else:
+            # Fallback: treat entire response as content, keep topic as title
+            synth_title   = topic
+            synth_content = raw
     except Exception as exc:
         log.warning("Synthesis failed for '%s': %s", topic, exc)
-        # Fall back to RSS summaries joined together (keep the summaries)
+        synth_title   = topic
         synth_content = " ".join(
             strip_html(e.get("summary", ""))[:300] for _, e in articles if e.get("summary")
         ).strip()
@@ -771,7 +775,7 @@ Write in flowing prose. No bullet points. No subheadings."""
             return None
 
     return {
-        "title": topic,
+        "title": synth_title,
         "content": synth_content,
         "thumbnail_url": thumbnail,
         "source_url": source_url,
